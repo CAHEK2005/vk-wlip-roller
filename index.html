@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VK Cloud Whitelist IP Roller</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f1117;
+      color: #c9d1d9;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    .container { max-width: 900px; margin: 0 auto; }
+
+    h1 { font-size: 1.5rem; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+    .subtitle { font-size: 0.82rem; color: #8b949e; margin-bottom: 20px; }
+
+    /* Cards */
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .card-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #8b949e;
+    }
+
+    /* Account card */
+    .account-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+
+    .account-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .account-name-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid #30363d;
+      color: #e6edf3;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 2px 4px;
+      outline: none;
+    }
+
+    .account-name-input:focus { border-bottom-color: #58a6ff; }
+
+    /* Form fields */
+    .field-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .field-label {
+      font-size: 0.72rem;
+      color: #8b949e;
+      white-space: nowrap;
+      width: 72px;
+      flex-shrink: 0;
+    }
+
+    input[type="password"],
+    input[type="text"],
+    input[type="number"] {
+      flex: 1;
+      min-width: 140px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-family: monospace;
+      font-size: 0.8rem;
+      padding: 6px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="file"] {
+      flex: 1;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #8b949e;
+      font-size: 0.78rem;
+      padding: 5px 10px;
+      cursor: pointer;
+      min-width: 140px;
+    }
+
+    input[type="number"] { max-width: 90px; min-width: 70px; }
+    input:focus { border-color: #58a6ff; }
+
+    .field-hint {
+      font-size: 0.7rem;
+      color: #484f58;
+      padding-left: 80px;
+      margin-top: -4px;
+      margin-bottom: 6px;
+    }
+
+    /* Parsed openrc badge */
+    .openrc-status {
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+    }
+
+    .openrc-ok  { background: #1a4731; color: #3fb950; }
+    .openrc-err { background: #3d1a1a; color: #f85149; }
+
+    /* IP list inside account */
+    .ip-list-small {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 8px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    .ip-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 5px;
+      padding: 5px 10px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: border-color 0.12s;
+    }
+
+    .ip-item:hover { border-color: #388bfd; }
+    .ip-item.selected { border-color: #1f6feb; background: #0d1f3c; }
+
+    .ip-addr { color: #79c0ff; flex: 1; }
+    .ip-badge { font-size: 0.68rem; padding: 1px 6px; border-radius: 10px; font-weight: 600; }
+    .badge-active { background: #1a4731; color: #3fb950; }
+    .badge-down   { background: #3d1a1a; color: #f85149; }
+    .badge-other  { background: #2d2d2d; color: #8b949e; }
+    .ip-fixed { color: #8b949e; font-size: 0.7rem; }
+
+    /* Buttons */
+    button {
+      cursor: pointer; border: none; border-radius: 6px;
+      font-size: 0.8rem; font-weight: 600; padding: 6px 14px;
+      transition: opacity 0.15s, background 0.15s; white-space: nowrap;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-primary   { background: #238636; color: #fff; }
+    .btn-primary:hover:not(:disabled)   { background: #2ea043; }
+
+    .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+    .btn-secondary:hover:not(:disabled) { background: #30363d; }
+
+    .btn-danger    { background: #da3633; color: #fff; }
+    .btn-danger:hover:not(:disabled)    { background: #f85149; }
+
+    .btn-stop      { background: #b94700; color: #fff; }
+    .btn-stop:hover:not(:disabled)      { background: #d85200; }
+
+    .btn-icon {
+      background: transparent; border: none; color: #8b949e;
+      font-size: 1rem; padding: 2px 6px; cursor: pointer; border-radius: 4px;
+    }
+    .btn-icon:hover { color: #f85149; background: #2d1a1a; }
+
+    /* Checkbox */
+    input[type="checkbox"] {
+      width: 16px; height: 16px; cursor: pointer; accent-color: #238636;
+      flex-shrink: 0;
+    }
+
+    /* Settings row */
+    .settings-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .settings-row label { font-size: 0.8rem; color: #c9d1d9; }
+
+    /* Actions bar */
+    .actions-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    /* Check IP row */
+    .check-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    /* Log sections */
+    .log-section { margin-bottom: 14px; }
+
+    .log-account-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #58a6ff;
+      padding: 0 0 6px 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .log-account-label::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #21262d;
+    }
+
+    .log-panel {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      height: 180px;
+      overflow-y: auto;
+      padding: 8px 12px;
+    }
+
+    .log-row { padding: 1px 0; line-height: 1.6; }
+    .log-info { color: #8b949e; }
+    .log-miss { color: #f85149; }
+    .log-hit  { color: #3fb950; font-weight: 700; }
+    .log-warn { color: #d29922; }
+
+    /* Status banner per account */
+    .status-banner {
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      margin-top: 6px;
+      display: none;
+    }
+    .status-banner.show { display: block; }
+    .status-running { background: #1c2a3e; color: #58a6ff; border: 1px solid #1f6feb; }
+    .status-success { background: #1a4731; color: #3fb950; border: 1px solid #238636; }
+    .status-error   { background: #3d1a1a; color: #f85149; border: 1px solid #da3633; }
+    .status-stopped { background: #2d2300; color: #d29922; border: 1px solid #9e6a03; }
+
+    .empty-hint { color: #484f58; font-size: 0.75rem; text-align: center; padding: 12px; }
+
+    /* Replace mode selected label */
+    .replace-label {
+      font-size: 0.72rem;
+      color: #8b949e;
+      margin-top: 4px;
+      min-height: 16px;
+    }
+    .replace-label span { color: #79c0ff; font-family: monospace; }
+
+    /* Reconnect banner */
+    .reconnect-banner {
+      display: none;
+      background: #1c2a3e;
+      border: 1px solid #1f6feb;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 14px;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .reconnect-banner.show { display: flex; }
+    .reconnect-banner-text { color: #58a6ff; flex: 1; font-size: 0.85rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>VK Cloud Whitelist IP Roller</h1>
+  <p class="subtitle">Поиск Floating IP из белого списка подсетей — с поддержкой нескольких аккаунтов и прокси</p>
+
+  <!-- Reconnect banner -->
+  <div class="reconnect-banner" id="reconnectBanner">
+    <span class="reconnect-banner-text">&#9654; Активная сессия найдена — выполнение продолжается в фоне</span>
+    <button class="btn-primary" onclick="doReconnect()">Подключиться</button>
+    <button class="btn-secondary" onclick="dismissReconnect()">Отмена</button>
+  </div>
+
+  <!-- Accounts card -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Аккаунты</div>
+      <button class="btn-secondary" onclick="addAccount()">+ Добавить аккаунт</button>
+    </div>
+    <div id="accountsList">
+      <!-- account cards rendered here -->
+    </div>
+  </div>
+
+  <!-- Settings card -->
+  <div class="card">
+    <div class="card-title" style="margin-bottom:10px;">Настройки паузы</div>
+    <div class="settings-row" style="margin-bottom:10px;">
+      <label>Интервал между попытками:</label>
+      <label style="color:#8b949e;font-size:0.78rem;">от</label>
+      <input type="number" id="delayMin" value="3" min="1" max="300" step="1">
+      <label style="color:#8b949e;font-size:0.78rem;">до</label>
+      <input type="number" id="delayMax" value="8" min="1" max="300" step="1">
+      <label style="color:#8b949e;font-size:0.78rem;">секунд</label>
+    </div>
+    <div class="settings-row">
+      <label>Длинная пауза:</label>
+      <label style="color:#8b949e;font-size:0.78rem;">шанс</label>
+      <input type="number" id="longPauseChance" value="10" min="0" max="100" step="1">
+      <label style="color:#8b949e;font-size:0.78rem;">% &nbsp; от</label>
+      <input type="number" id="longPauseMin" value="5" min="1" max="120" step="1">
+      <label style="color:#8b949e;font-size:0.78rem;">до</label>
+      <input type="number" id="longPauseMax" value="20" min="1" max="120" step="1">
+      <label style="color:#8b949e;font-size:0.78rem;">минут &nbsp;(независимо для каждого аккаунта)</label>
+    </div>
+    <div class="settings-row" style="margin-top:10px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="timerEnabled" style="width:14px;height:14px;margin:0;accent-color:#238636;">
+        Таймер:
+      </label>
+      <input type="number" id="timerMinutes" value="60" min="1" max="1440" step="1">
+      <label style="color:#8b949e;font-size:0.78rem;">мин — затем остановить</label>
+      <span id="timerCountdown" style="font-family:monospace;font-size:0.8rem;color:#58a6ff;font-weight:600;"></span>
+    </div>
+  </div>
+
+  <!-- Actions bar -->
+  <div class="actions-bar">
+    <button class="btn-primary" id="btnStartAll" onclick="startAll()">Запустить поиск на выбранных</button>
+    <button class="btn-stop"    id="btnStopAll"  onclick="stopAll()" style="display:none;">Остановить всё</button>
+  </div>
+
+  <!-- IP check widget -->
+  <div class="card">
+    <div class="card-title" style="margin-bottom:10px;">Проверить IP по белому списку</div>
+    <div class="check-row">
+      <input type="text" id="checkIpInput" placeholder="например: 5.8.22.1" style="max-width:200px;"
+             onkeydown="if(event.key==='Enter') checkIP()">
+      <button class="btn-secondary" onclick="checkIP()">Проверить</button>
+      <span id="checkIpResult" style="font-family:monospace;font-size:0.82rem;"></span>
+    </div>
+  </div>
+
+  <!-- Log sections container -->
+  <div id="logsContainer"></div>
+
+</div>
+
+<script>
+// =============================================================================
+// State
+// =============================================================================
+let accounts = [];
+let currentSessionId = null;
+let abortController = null;
+let isRunning = false;
+let accountCounter = 0;
+let timerHandle = null;
+let timerCountdownHandle = null;
+
+// =============================================================================
+// Account management
+// =============================================================================
+function addAccount() {
+  const id = 'acc_' + (++accountCounter);
+  const acc = {
+    id,
+    name: 'Аккаунт ' + accountCounter,
+    openrcVars: {},
+    token: '',
+    proxy: '',
+    ips: [],
+    selectedIPId: null,
+    selectedIP: null,
+    checked: true,
+  };
+  accounts.push(acc);
+  renderAccount(acc);
+}
+
+function removeAccount(id) {
+  accounts = accounts.filter(a => a.id !== id);
+  document.getElementById('card_' + id)?.remove();
+  document.getElementById('log_section_' + id)?.remove();
+}
+
+function getAccount(id) {
+  return accounts.find(a => a.id === id);
+}
+
+function renderAccount(acc) {
+  const list = document.getElementById('accountsList');
+  const div = document.createElement('div');
+  div.className = 'account-card';
+  div.id = 'card_' + acc.id;
+  div.innerHTML = `
+    <div class="account-header">
+      <input type="checkbox" id="chk_${acc.id}" checked onchange="toggleAccount('${acc.id}', this.checked)">
+      <input class="account-name-input" type="text" value="${acc.name}"
+             oninput="getAccount('${acc.id}').name = this.value; updateLogLabel('${acc.id}', this.value)">
+      <button class="btn-icon" onclick="removeAccount('${acc.id}')" title="Удалить аккаунт">×</button>
+    </div>
+
+    <div class="field-row">
+      <span class="field-label">OpenRC v3</span>
+      <input type="file" accept=".sh,text/*" onchange="parseOpenRC('${acc.id}', this)">
+      <span class="openrc-status" id="openrc_status_${acc.id}"></span>
+    </div>
+
+    <div class="field-row">
+      <span class="field-label">API Токен</span>
+      <input type="password" placeholder="Постоянный токен VK Cloud..."
+             oninput="getAccount('${acc.id}').token = this.value">
+    </div>
+
+    <div class="field-row">
+      <span class="field-label">Прокси</span>
+      <input type="text" placeholder="socks5://user:pass@host:1080  или  http://host:3128"
+             oninput="getAccount('${acc.id}').proxy = this.value">
+      <button class="btn-secondary" style="font-size:0.72rem;padding:5px 10px;"
+              onclick="checkProxy('${acc.id}')">Проверить</button>
+      <span id="proxy_status_${acc.id}" style="font-family:monospace;font-size:0.75rem;"></span>
+    </div>
+    <div class="field-hint">Необязательно. Поддерживаются socks5:// и http://</div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+      <button class="btn-secondary" id="btnLoad_${acc.id}" onclick="loadIPs('${acc.id}')">Загрузить IP</button>
+      <span id="load_status_${acc.id}" style="font-size:0.75rem;color:#8b949e;"></span>
+    </div>
+
+    <div id="ip_list_${acc.id}" class="ip-list-small">
+      <div class="empty-hint">Нажмите "Загрузить IP"</div>
+    </div>
+
+    <div class="replace-label" id="replace_label_${acc.id}">
+      Выбранный для замены: <span>не выбран</span>
+    </div>
+    <div style="margin-top:8px;">
+      <button class="btn-danger" id="btnReplace_${acc.id}" onclick="startReplace('${acc.id}')" disabled>
+        Заменить выбранный IP
+      </button>
+    </div>
+  `;
+  list.appendChild(div);
+
+  // Restore saved field values (used when recreating account from localStorage)
+  if (acc.token) {
+    const tokenEl = div.querySelector('input[type="password"]');
+    if (tokenEl) tokenEl.value = acc.token;
+  }
+  if (acc.proxy) {
+    const proxyEl = div.querySelector('input[type="text"][placeholder*="socks5"]');
+    if (proxyEl) proxyEl.value = acc.proxy;
+  }
+  if (acc.openrcVars && acc.openrcVars['OS_PROJECT_ID']) {
+    const el = document.getElementById('openrc_status_' + acc.id);
+    if (el) {
+      el.className = 'openrc-status openrc-ok';
+      el.textContent = acc.openrcVars['OS_PROJECT_ID'].slice(0, 8) + '...';
+    }
+  }
+}
+
+function toggleAccount(id, checked) {
+  const acc = getAccount(id);
+  if (acc) acc.checked = checked;
+}
+
+// =============================================================================
+// OpenRC parsing
+// =============================================================================
+function parseOpenRC(accId, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const vars = {};
+    const re = /export\s+([A-Z_]+)\s*=\s*["']?([^"'\s;#]+)["']?/g;
+    let m;
+    while ((m = re.exec(text)) !== null) vars[m[1]] = m[2];
+
+    const acc = getAccount(accId);
+    if (acc) acc.openrcVars = vars;
+
+    const needed = ['OS_AUTH_URL', 'OS_PROJECT_ID', 'OS_REGION_NAME'];
+    const missing = needed.filter(k => !vars[k]);
+    const el = document.getElementById('openrc_status_' + accId);
+    if (missing.length) {
+      el.className = 'openrc-status openrc-err';
+      el.textContent = 'Не найдены: ' + missing.join(', ');
+    } else {
+      el.className = 'openrc-status openrc-ok';
+      el.textContent = vars['OS_PROJECT_ID'].slice(0, 8) + '...';
+    }
+  };
+  reader.readAsText(file);
+}
+
+// =============================================================================
+// Credentials helpers
+// =============================================================================
+function getCredParams(acc) {
+  return {
+    auth_url:   acc.openrcVars['OS_AUTH_URL']   || '',
+    project_id: acc.openrcVars['OS_PROJECT_ID'] || '',
+    region:     acc.openrcVars['OS_REGION_NAME'] || 'RegionOne',
+    api_token:  acc.token || '',
+    proxy_url:  acc.proxy || '',
+  };
+}
+
+function validateAcc(acc) {
+  const c = getCredParams(acc);
+  const problems = [];
+  if (!c.auth_url)   problems.push('Загрузите OpenRC файл');
+  if (!c.project_id) problems.push('OpenRC не содержит OS_PROJECT_ID');
+  if (!c.api_token)  problems.push('Введите API Токен');
+  return problems;
+}
+
+// =============================================================================
+// Load floating IPs for one account
+// =============================================================================
+async function loadIPs(accId) {
+  const acc = getAccount(accId);
+  if (!acc) return;
+  const problems = validateAcc(acc);
+  if (problems.length) { alert(acc.name + ':\n' + problems.join('\n')); return; }
+
+  const btn = document.getElementById('btnLoad_' + accId);
+  const statusEl = document.getElementById('load_status_' + accId);
+  btn.disabled = true;
+  btn.textContent = 'Загрузка...';
+  statusEl.textContent = '';
+
+  const c = getCredParams(acc);
+  const qs = new URLSearchParams(c).toString();
+  try {
+    const r = await fetch('/api/ips?' + qs);
+    const d = await r.json();
+    if (d.error) { statusEl.style.color = '#f85149'; statusEl.textContent = d.error; return; }
+    acc.ips = d.ips;
+    statusEl.style.color = '#3fb950';
+    statusEl.textContent = d.ips.length + ' IP загружено';
+    renderIPList(accId, d.ips);
+  } catch (e) {
+    statusEl.style.color = '#f85149';
+    statusEl.textContent = 'Ошибка: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Загрузить IP';
+  }
+}
+
+function renderIPList(accId, ips) {
+  const list = document.getElementById('ip_list_' + accId);
+  if (!ips || !ips.length) {
+    list.innerHTML = '<div class="empty-hint">Floating IP не найдены</div>';
+    return;
+  }
+  list.innerHTML = '';
+  ips.forEach(ip => {
+    const item = document.createElement('div');
+    item.className = 'ip-item';
+    const bc = ip.status === 'ACTIVE' ? 'badge-active'
+             : ip.status === 'DOWN'   ? 'badge-down'
+             : 'badge-other';
+    item.innerHTML = `
+      <span class="ip-addr">${ip.ip}</span>
+      <span class="ip-badge ${bc}">${ip.status}</span>
+      <span class="ip-fixed">${ip.fixed_ip || 'free'}</span>
+    `;
+    item.addEventListener('click', () => selectIP(accId, ip.id, ip.ip, item));
+    list.appendChild(item);
+  });
+}
+
+function selectIP(accId, id, ip, el) {
+  const acc = getAccount(accId);
+  if (!acc) return;
+  document.querySelectorAll('#ip_list_' + accId + ' .ip-item.selected')
+    .forEach(e => e.classList.remove('selected'));
+  acc.selectedIPId = id;
+  acc.selectedIP = ip;
+  el.classList.add('selected');
+  document.getElementById('replace_label_' + accId).innerHTML =
+    `Выбранный для замены: <span>${ip}</span>`;
+  document.getElementById('btnReplace_' + accId).disabled = isRunning;
+}
+
+// =============================================================================
+// Start / Stop
+// =============================================================================
+function buildAccountPayload(acc, mode) {
+  const c = getCredParams(acc);
+  return {
+    id:         acc.id,
+    name:       acc.name,
+    auth_url:   c.auth_url,
+    project_id: c.project_id,
+    region:     c.region,
+    api_token:  c.api_token,
+    proxy_url:  c.proxy_url,
+    old_ip_id:  (mode === 'replace' && acc.selectedIPId) ? acc.selectedIPId : '',
+  };
+}
+
+function startAll() {
+  const selected = accounts.filter(a => a.checked);
+  if (!selected.length) { alert('Выберите хотя бы один аккаунт'); return; }
+
+  const problems = [];
+  for (const acc of selected) {
+    const errs = validateAcc(acc);
+    if (errs.length) problems.push(acc.name + ': ' + errs.join(', '));
+  }
+  if (problems.length) { alert(problems.join('\n')); return; }
+
+  const delayMin = parseFloat(document.getElementById('delayMin').value) || 3;
+  const delayMax = parseFloat(document.getElementById('delayMax').value) || 8;
+  const longPauseChance = parseFloat(document.getElementById('longPauseChance').value) || 0;
+  const longPauseMin = parseFloat(document.getElementById('longPauseMin').value) || 5;
+  const longPauseMax = parseFloat(document.getElementById('longPauseMax').value) || 20;
+
+  const body = {
+    mode: 'find',
+    delay_min: delayMin,
+    delay_max: delayMax,
+    long_pause_chance: longPauseChance,
+    long_pause_min: longPauseMin,
+    long_pause_max: longPauseMax,
+    accounts: selected.map(acc => buildAccountPayload(acc, 'find')),
+  };
+
+  launchStream(body, selected);
+}
+
+function startReplace(accId) {
+  const acc = getAccount(accId);
+  if (!acc || !acc.selectedIPId) { alert('Выберите IP для замены'); return; }
+  const problems = validateAcc(acc);
+  if (problems.length) { alert(acc.name + ':\n' + problems.join('\n')); return; }
+
+  const delayMin = parseFloat(document.getElementById('delayMin').value) || 3;
+  const delayMax = parseFloat(document.getElementById('delayMax').value) || 8;
+  const longPauseChance = parseFloat(document.getElementById('longPauseChance').value) || 0;
+  const longPauseMin = parseFloat(document.getElementById('longPauseMin').value) || 5;
+  const longPauseMax = parseFloat(document.getElementById('longPauseMax').value) || 20;
+
+  const body = {
+    mode: 'replace',
+    delay_min: delayMin,
+    delay_max: delayMax,
+    long_pause_chance: longPauseChance,
+    long_pause_min: longPauseMin,
+    long_pause_max: longPauseMax,
+    accounts: [buildAccountPayload(acc, 'replace')],
+  };
+
+  launchStream(body, [acc]);
+}
+
+async function launchStream(body, involvedAccounts) {
+  if (isRunning) return;
+  setRunning(true);
+
+  currentSessionId = null;
+  abortController = new AbortController();
+
+  for (const acc of involvedAccounts) {
+    getOrCreateLogSection(acc.id, acc.name);
+    clearLog(acc.id);
+    setBanner(acc.id, 'running', 'Запуск...');
+  }
+
+  // Step 1: Create persistent session
+  let sessionId;
+  try {
+    const r = await fetch('/api/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || 'HTTP ' + r.status);
+    sessionId = d.session_id;
+  } catch(e) {
+    for (const acc of involvedAccounts) {
+      addLog(acc.id, 'warn', 'Ошибка запуска: ' + e.message);
+      setBanner(acc.id, 'error', 'Ошибка запуска');
+    }
+    setRunning(false);
+    return;
+  }
+
+  currentSessionId = sessionId;
+  localStorage.setItem('session_id', sessionId);
+  localStorage.setItem('session_accounts', JSON.stringify(
+    involvedAccounts.map(a => ({
+      id: a.id, name: a.name,
+      openrcVars: a.openrcVars, token: a.token, proxy: a.proxy,
+      selectedIPId: a.selectedIPId, selectedIP: a.selectedIP, checked: a.checked,
+    }))
+  ));
+  localStorage.setItem('session_settings', JSON.stringify({
+    delayMin:        document.getElementById('delayMin').value,
+    delayMax:        document.getElementById('delayMax').value,
+    longPauseChance: document.getElementById('longPauseChance').value,
+    longPauseMin:    document.getElementById('longPauseMin').value,
+    longPauseMax:    document.getElementById('longPauseMax').value,
+    timerEnabled:    document.getElementById('timerEnabled').checked,
+    timerMinutes:    document.getElementById('timerMinutes').value,
+  }));
+
+  // Start frontend timer (stops search after specified time)
+  startTimer();
+
+  // Step 2: Connect SSE stream
+  connectStream(sessionId, involvedAccounts);
+}
+
+function connectStream(sessionId, involvedAccounts) {
+  fetch('/api/stream?session_id=' + encodeURIComponent(sessionId), {
+    signal: abortController ? abortController.signal : undefined,
+  })
+  .then(res => {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lastEvent = 'message';
+
+    function pump() {
+      return reader.read().then(({ done, value }) => {
+        if (done) {
+          // Stream closed normally — session completed
+          localStorage.removeItem('session_id');
+          localStorage.removeItem('session_accounts');
+          localStorage.removeItem('session_settings');
+          checkAllDone();
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            lastEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            handleSSEEvent(lastEvent, line.slice(5).trim());
+          } else if (line === '') {
+            lastEvent = 'message';
+          }
+        }
+        return pump();
+      }).catch(err => {
+        if (err.name !== 'AbortError') {
+          for (const acc of involvedAccounts) {
+            addLog(acc.id, 'warn', 'Соединение прервано: ' + err.message);
+          }
+        }
+        checkAllDone();
+      });
+    }
+    return pump();
+  })
+  .catch(err => {
+    if (err.name !== 'AbortError') {
+      for (const acc of involvedAccounts) {
+        addLog(acc.id, 'warn', 'Ошибка запроса: ' + err.message);
+        setBanner(acc.id, 'error', 'Ошибка соединения');
+      }
+    } else {
+      for (const acc of involvedAccounts) {
+        setBanner(acc.id, 'stopped', 'Остановлено. Сервер удаляет IP...');
+      }
+    }
+    checkAllDone();
+  });
+}
+
+// =============================================================================
+// Timer
+// =============================================================================
+function startTimer(endsAtOverride) {
+  clearTimer();
+  const enabled = document.getElementById('timerEnabled').checked;
+  if (!enabled && !endsAtOverride) return;
+
+  let endsAt = endsAtOverride;
+  if (!endsAt) {
+    const minutes = parseFloat(document.getElementById('timerMinutes').value) || 60;
+    endsAt = Date.now() + minutes * 60 * 1000;
+    localStorage.setItem('timer_ends_at', String(endsAt));
+  }
+
+  const remaining = endsAt - Date.now();
+  if (remaining <= 0) return;
+
+  timerHandle = setTimeout(() => {
+    addLog('system', 'warn', 'Таймер истёк — останавливаем поиск...');
+    stopAll();
+  }, remaining);
+
+  const el = document.getElementById('timerCountdown');
+  timerCountdownHandle = setInterval(() => {
+    const rem = endsAt - Date.now();
+    if (rem <= 0) { clearInterval(timerCountdownHandle); el.textContent = ''; return; }
+    const h = Math.floor(rem / 3600000);
+    const m = Math.floor((rem % 3600000) / 60000);
+    const s = Math.floor((rem % 60000) / 1000);
+    el.textContent = h > 0 ? `(${h}ч ${m}м ${s}с)` : `(${m}м ${s}с)`;
+  }, 1000);
+}
+
+function clearTimer() {
+  if (timerHandle) { clearTimeout(timerHandle); timerHandle = null; }
+  if (timerCountdownHandle) { clearInterval(timerCountdownHandle); timerCountdownHandle = null; }
+  const el = document.getElementById('timerCountdown');
+  if (el) el.textContent = '';
+  localStorage.removeItem('timer_ends_at');
+}
+
+function checkAllDone() {
+  currentSessionId = null;
+  clearTimer();
+  setRunning(false);
+}
+
+async function stopAll() {
+  clearTimer();
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  const sid = currentSessionId;
+  currentSessionId = null;
+  localStorage.removeItem('session_id');
+  localStorage.removeItem('session_accounts');
+  localStorage.removeItem('session_settings');
+  if (sid) {
+    try {
+      await fetch('/api/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid }),
+      });
+    } catch(e) {}
+  }
+}
+
+// =============================================================================
+// Reconnect — restore session after tab reload
+// =============================================================================
+async function checkReconnect() {
+  const sid = localStorage.getItem('session_id');
+  if (!sid) return;
+
+  try {
+    const r = await fetch('/api/sessions');
+    const d = await r.json();
+    const found = (d.sessions || []).find(s => s.session_id === sid);
+    if (!found || found.done) {
+      localStorage.removeItem('session_id');
+      localStorage.removeItem('session_accounts');
+      return;
+    }
+    // Show reconnect banner
+    document.getElementById('reconnectBanner').classList.add('show');
+  } catch(e) {
+    // Server not reachable yet — keep localStorage, don't show banner
+  }
+}
+
+function doReconnect() {
+  const sid = localStorage.getItem('session_id');
+  document.getElementById('reconnectBanner').classList.remove('show');
+  if (!sid) return;
+
+  let savedAccounts = [];
+  try {
+    savedAccounts = JSON.parse(localStorage.getItem('session_accounts') || '[]');
+  } catch(e) {}
+
+  // Restore account cards (replace any auto-created empty ones with saved config)
+  for (const accData of savedAccounts) {
+    const existing = getAccount(accData.id);
+    if (existing) {
+      accounts = accounts.filter(a => a.id !== accData.id);
+      document.getElementById('card_' + accData.id)?.remove();
+    }
+    const num = parseInt(accData.id.replace('acc_', '')) || 0;
+    if (num > accountCounter) accountCounter = num;
+
+    const acc = {
+      id: accData.id,
+      name: accData.name,
+      openrcVars: accData.openrcVars || {},
+      token: accData.token || '',
+      proxy: accData.proxy || '',
+      ips: [],
+      selectedIPId: accData.selectedIPId || null,
+      selectedIP: accData.selectedIP || null,
+      checked: accData.checked !== false,
+    };
+    accounts.push(acc);
+    renderAccount(acc);
+  }
+
+  // Restore settings
+  try {
+    const s = JSON.parse(localStorage.getItem('session_settings') || '{}');
+    if (s.delayMin !== undefined)        document.getElementById('delayMin').value = s.delayMin;
+    if (s.delayMax !== undefined)        document.getElementById('delayMax').value = s.delayMax;
+    if (s.longPauseChance !== undefined) document.getElementById('longPauseChance').value = s.longPauseChance;
+    if (s.longPauseMin !== undefined)    document.getElementById('longPauseMin').value = s.longPauseMin;
+    if (s.longPauseMax !== undefined)    document.getElementById('longPauseMax').value = s.longPauseMax;
+    if (s.timerEnabled !== undefined)    document.getElementById('timerEnabled').checked = s.timerEnabled;
+    if (s.timerMinutes !== undefined)    document.getElementById('timerMinutes').value = s.timerMinutes;
+  } catch(e) {}
+
+  // Resume timer if it hasn't expired yet
+  const timerEndsAt = parseInt(localStorage.getItem('timer_ends_at') || '0');
+  if (timerEndsAt > Date.now()) startTimer(timerEndsAt);
+
+  currentSessionId = sid;
+  abortController = new AbortController();
+  setRunning(true);
+
+  for (const acc of savedAccounts) {
+    getOrCreateLogSection(acc.id, acc.name);
+    clearLog(acc.id);
+    setBanner(acc.id, 'running', 'Переподключение...');
+  }
+
+  connectStream(sid, savedAccounts);
+}
+
+function dismissReconnect() {
+  document.getElementById('reconnectBanner').classList.remove('show');
+  localStorage.removeItem('session_id');
+  localStorage.removeItem('session_accounts');
+  localStorage.removeItem('session_settings');
+}
+
+// =============================================================================
+// SSE event handler
+// =============================================================================
+function handleSSEEvent(event, rawData) {
+  let d;
+  try { d = JSON.parse(rawData); } catch { return; }
+
+  const accId = d.account_id || 'system';
+
+  if (event === 'status') {
+    addLog(accId, 'info', d.msg || rawData);
+
+  } else if (event === 'attempt') {
+    if (d.match) {
+      addLog(accId, 'hit', `[#${d.n}] ${d.ip}  — НАЙДЕН!  сеть: ${d.match}`);
+    } else {
+      addLog(accId, 'miss', `[#${d.n}] ${d.ip}  — не в белом списке`);
+    }
+
+  } else if (event === 'success') {
+    addLog(accId, 'hit', `Найден: ${d.ip}  (${d.network})  за ${d.attempts} попытки`);
+    setBanner(accId, 'success',
+      `IP из белого списка: ${d.ip}  (${d.network})  попыток: ${d.attempts}`);
+
+  } else if (event === 'error') {
+    addLog(accId, 'warn', 'ОШИБКА: ' + (d.msg || rawData));
+    setBanner(accId, 'error', d.msg || rawData);
+  }
+}
+
+// =============================================================================
+// Log helpers
+// =============================================================================
+function getOrCreateLogSection(accId, accName) {
+  if (document.getElementById('log_section_' + accId)) return;
+  const container = document.getElementById('logsContainer');
+  const section = document.createElement('div');
+  section.className = 'log-section';
+  section.id = 'log_section_' + accId;
+  section.innerHTML = `
+    <div class="log-account-label" id="log_label_${accId}">${accName}</div>
+    <div class="log-panel" id="log_panel_${accId}"></div>
+    <div class="status-banner" id="banner_${accId}"></div>
+  `;
+  container.appendChild(section);
+}
+
+function updateLogLabel(accId, name) {
+  const el = document.getElementById('log_label_' + accId);
+  if (el) el.childNodes[0].textContent = name;
+}
+
+function clearLog(accId) {
+  const panel = document.getElementById('log_panel_' + accId);
+  if (panel) panel.innerHTML = '';
+  setBanner(accId, '', '');
+}
+
+function addLog(accId, cls, text) {
+  getOrCreateLogSection(accId, accId);
+  const panel = document.getElementById('log_panel_' + accId);
+  if (!panel) return;
+  const row = document.createElement('div');
+  row.className = 'log-row log-' + cls;
+  row.textContent = text;
+  panel.appendChild(row);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function setBanner(accId, type, text) {
+  const el = document.getElementById('banner_' + accId);
+  if (!el) return;
+  if (!type) { el.className = 'status-banner'; el.textContent = ''; return; }
+  el.className = 'status-banner show status-' + type;
+  el.textContent = text;
+}
+
+// =============================================================================
+// Global running state
+// =============================================================================
+function setRunning(running) {
+  isRunning = running;
+  document.getElementById('btnStartAll').disabled = running;
+  document.getElementById('btnStartAll').textContent =
+    running ? 'Выполняется...' : 'Запустить поиск на выбранных';
+  document.getElementById('btnStopAll').style.display =
+    running ? 'inline-block' : 'none';
+
+  accounts.forEach(acc => {
+    const btn = document.getElementById('btnReplace_' + acc.id);
+    if (btn) btn.disabled = running || !acc.selectedIPId;
+  });
+
+  if (!running) abortController = null;
+}
+
+// =============================================================================
+// Proxy check
+// =============================================================================
+async function checkProxy(accId) {
+  const acc = getAccount(accId);
+  if (!acc) return;
+  const proxyUrl = acc.proxy.trim();
+  const out = document.getElementById('proxy_status_' + accId);
+  if (!proxyUrl) { out.style.color = '#d29922'; out.textContent = 'Прокси не задан'; return; }
+
+  out.style.color = '#8b949e';
+  out.textContent = 'Проверка...';
+
+  try {
+    const r = await fetch('/api/check-proxy?proxy_url=' + encodeURIComponent(proxyUrl));
+    const d = await r.json();
+    if (d.ok) {
+      out.style.color = '#3fb950';
+      out.textContent = 'OK — IP: ' + d.ip;
+    } else {
+      out.style.color = '#f85149';
+      out.textContent = 'Ошибка: ' + (d.error || 'неизвестно');
+    }
+  } catch(e) {
+    out.style.color = '#f85149';
+    out.textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+// =============================================================================
+// IP check widget
+// =============================================================================
+async function checkIP() {
+  const ip = document.getElementById('checkIpInput').value.trim();
+  const out = document.getElementById('checkIpResult');
+  if (!ip) return;
+  out.style.color = '#8b949e';
+  out.textContent = '...';
+  try {
+    const r = await fetch('/api/check-ip?ip=' + encodeURIComponent(ip));
+    const d = await r.json();
+    if (d.error) { out.style.color = '#f85149'; out.textContent = d.error; return; }
+    if (d.in_whitelist) {
+      out.style.color = '#3fb950';
+      out.textContent = 'СОВПАДЕНИЕ -> ' + d.network;
+    } else {
+      out.style.color = '#f85149';
+      out.textContent = 'не в белом списке';
+    }
+  } catch(e) {
+    out.style.color = '#f85149';
+    out.textContent = 'ошибка: ' + e.message;
+  }
+}
+
+// =============================================================================
+// Init
+// =============================================================================
+addAccount();
+checkReconnect();
+</script>
+</body>
+</html>
