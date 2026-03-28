@@ -321,11 +321,10 @@
   <h1>VK Cloud Whitelist IP Roller</h1>
   <p class="subtitle">Поиск Floating IP из белого списка подсетей — с поддержкой нескольких аккаунтов и прокси</p>
 
-  <!-- Reconnect banner -->
-  <div class="reconnect-banner" id="reconnectBanner">
-    <span class="reconnect-banner-text">&#9654; Активная сессия найдена — выполнение продолжается в фоне</span>
-    <button class="btn-primary" onclick="doReconnect()">Подключиться</button>
-    <button class="btn-secondary" onclick="dismissReconnect()">Отмена</button>
+  <!-- Sessions panel -->
+  <div id="sessionsPanel" style="display:none; margin-bottom:14px;">
+    <div class="card-title" style="margin-bottom:8px;">Активные сессии</div>
+    <div id="sessionsList"></div>
   </div>
 
   <!-- Accounts card -->
@@ -398,9 +397,8 @@
 // State
 // =============================================================================
 let accounts = [];
-let currentSessionId = null;
-let abortController = null;
-let isRunning = false;
+let runningSessions = new Set();   // session_ids активных с этого браузера
+let sessionAborts = {};            // session_id -> AbortController
 let accountCounter = 0;
 let timerHandle = null;
 let timerCountdownHandle = null;
@@ -633,7 +631,7 @@ function selectIP(accId, id, ip, el) {
   el.classList.add('selected');
   document.getElementById('replace_label_' + accId).innerHTML =
     `Выбранный для замены: <span>${ip}</span>`;
-  document.getElementById('btnReplace_' + accId).disabled = isRunning;
+  updateRunningUI();
 }
 
 // =============================================================================
@@ -709,12 +707,6 @@ function startReplace(accId) {
 }
 
 async function launchStream(body, involvedAccounts) {
-  if (isRunning) return;
-  setRunning(true);
-
-  currentSessionId = null;
-  abortController = new AbortController();
-
   for (const acc of involvedAccounts) {
     getOrCreateLogSection(acc.id, acc.name);
     clearLog(acc.id);
@@ -737,11 +729,12 @@ async function launchStream(body, involvedAccounts) {
       addLog(acc.id, 'warn', 'Ошибка запуска: ' + e.message);
       setBanner(acc.id, 'error', 'Ошибка запуска');
     }
-    setRunning(false);
     return;
   }
 
-  currentSessionId = sessionId;
+  runningSessions.add(sessionId);
+  sessionAborts[sessionId] = new AbortController();
+
   localStorage.setItem('session_id', sessionId);
   localStorage.setItem('session_accounts', JSON.stringify(
     involvedAccounts.map(a => ({
@@ -760,16 +753,20 @@ async function launchStream(body, involvedAccounts) {
     timerMinutes:    document.getElementById('timerMinutes').value,
   }));
 
-  // Start frontend timer (stops search after specified time)
-  startTimer();
+  // Start frontend timer only for the first session
+  if (runningSessions.size === 1) startTimer();
+
+  updateRunningUI();
+  loadSessionsPanel();
 
   // Step 2: Connect SSE stream
   connectStream(sessionId, involvedAccounts);
 }
 
 function connectStream(sessionId, involvedAccounts) {
+  const ctrl = sessionAborts[sessionId];
   fetch('/api/stream?session_id=' + encodeURIComponent(sessionId), {
-    signal: abortController ? abortController.signal : undefined,
+    signal: ctrl ? ctrl.signal : undefined,
   })
   .then(res => {
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -782,10 +779,13 @@ function connectStream(sessionId, involvedAccounts) {
       return reader.read().then(({ done, value }) => {
         if (done) {
           // Stream closed normally — session completed
-          localStorage.removeItem('session_id');
-          localStorage.removeItem('session_accounts');
-          localStorage.removeItem('session_settings');
-          checkAllDone();
+          if (localStorage.getItem('session_id') === sessionId) {
+            localStorage.removeItem('session_id');
+            localStorage.removeItem('session_accounts');
+            localStorage.removeItem('session_settings');
+            localStorage.removeItem('timer_ends_at');
+          }
+          checkAllDone(sessionId);
           return;
         }
         buffer += decoder.decode(value, { stream: true });
@@ -807,7 +807,7 @@ function connectStream(sessionId, involvedAccounts) {
             addLog(acc.id, 'warn', 'Соединение прервано: ' + err.message);
           }
         }
-        checkAllDone();
+        checkAllDone(sessionId);
       });
     }
     return pump();
@@ -823,7 +823,7 @@ function connectStream(sessionId, involvedAccounts) {
         setBanner(acc.id, 'stopped', 'Остановлено. Сервер удаляет IP...');
       }
     }
-    checkAllDone();
+    checkAllDone(sessionId);
   });
 }
 
@@ -869,69 +869,130 @@ function clearTimer() {
   localStorage.removeItem('timer_ends_at');
 }
 
-function checkAllDone() {
-  currentSessionId = null;
-  clearTimer();
-  setRunning(false);
+function checkAllDone(sid) {
+  runningSessions.delete(sid);
+  delete sessionAborts[sid];
+  if (runningSessions.size === 0) clearTimer();
+  updateRunningUI();
+  loadSessionsPanel();
 }
 
 async function stopAll() {
   clearTimer();
-  if (abortController) {
-    abortController.abort();
-    abortController = null;
+  for (const ctrl of Object.values(sessionAborts)) {
+    ctrl.abort();
   }
-  const sid = currentSessionId;
-  currentSessionId = null;
+  sessionAborts = {};
+  runningSessions.clear();
   localStorage.removeItem('session_id');
   localStorage.removeItem('session_accounts');
   localStorage.removeItem('session_settings');
-  if (sid) {
-    try {
-      await fetch('/api/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid }),
-      });
-    } catch(e) {}
+  localStorage.removeItem('timer_ends_at');
+  try {
+    await fetch('/api/stop-all', { method: 'POST' });
+  } catch(e) {}
+  updateRunningUI();
+  loadSessionsPanel();
+}
+
+async function stopSession(sid) {
+  const ctrl = sessionAborts[sid];
+  if (ctrl) { ctrl.abort(); delete sessionAborts[sid]; }
+  runningSessions.delete(sid);
+  if (runningSessions.size === 0) clearTimer();
+  if (localStorage.getItem('session_id') === sid) {
+    localStorage.removeItem('session_id');
+    localStorage.removeItem('session_accounts');
+    localStorage.removeItem('session_settings');
+    localStorage.removeItem('timer_ends_at');
   }
+  try {
+    await fetch('/api/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sid }),
+    });
+  } catch(e) {}
+  updateRunningUI();
+  loadSessionsPanel();
 }
 
 // =============================================================================
-// Reconnect — restore session after tab reload
+// Sessions panel — visible to all devices
 // =============================================================================
-async function checkReconnect() {
-  const sid = localStorage.getItem('session_id');
-  if (!sid) return;
-
+async function loadSessionsPanel() {
   try {
     const r = await fetch('/api/sessions');
     const d = await r.json();
-    const found = (d.sessions || []).find(s => s.session_id === sid);
-    if (!found || found.done) {
-      localStorage.removeItem('session_id');
-      localStorage.removeItem('session_accounts');
-      return;
-    }
-    // Show reconnect banner
-    document.getElementById('reconnectBanner').classList.add('show');
+    const active = (d.sessions || []).filter(s => !s.done);
+    renderSessionsList(active);
   } catch(e) {
-    // Server not reachable yet — keep localStorage, don't show banner
+    // Server not reachable
   }
 }
 
-function doReconnect() {
-  const sid = localStorage.getItem('session_id');
-  document.getElementById('reconnectBanner').classList.remove('show');
-  if (!sid) return;
+function renderSessionsList(sessions) {
+  const panel = document.getElementById('sessionsPanel');
+  const list = document.getElementById('sessionsList');
+  if (!sessions.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  list.innerHTML = '';
+  for (const s of sessions) {
+    const accountNames = (s.accounts || []).map(a => a.name).join(', ') || s.session_id.slice(0, 8);
+    const isConnected = runningSessions.has(s.session_id);
+    const item = document.createElement('div');
+    item.style.cssText = 'background:#1c2a3e;border:1px solid #1f6feb;border-radius:6px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;';
+    const nameSpan = document.createElement('span');
+    nameSpan.style.cssText = 'color:#58a6ff;flex:1;font-size:0.85rem;';
+    nameSpan.textContent = '\u25BA ' + accountNames;
+    if (isConnected) {
+      const badge = document.createElement('span');
+      badge.style.cssText = 'color:#3fb950;font-size:0.75rem;margin-left:6px;';
+      badge.textContent = '(подключено)';
+      nameSpan.appendChild(badge);
+    }
+    const eventsSpan = document.createElement('span');
+    eventsSpan.style.cssText = 'color:#8b949e;font-size:0.75rem;';
+    eventsSpan.textContent = s.events + ' событий';
+    item.appendChild(nameSpan);
+    item.appendChild(eventsSpan);
+    if (!isConnected) {
+      const connectBtn = document.createElement('button');
+      connectBtn.className = 'btn-primary';
+      connectBtn.style.cssText = 'font-size:0.78rem;padding:5px 12px;';
+      connectBtn.textContent = 'Подключиться';
+      connectBtn.addEventListener('click', () => doReconnect(s.session_id, s.accounts || []));
+      item.appendChild(connectBtn);
+    }
+    const stopBtn = document.createElement('button');
+    stopBtn.className = 'btn-stop';
+    stopBtn.style.cssText = 'font-size:0.78rem;padding:5px 12px;';
+    stopBtn.textContent = 'Стоп';
+    stopBtn.addEventListener('click', () => stopSession(s.session_id));
+    item.appendChild(stopBtn);
+    list.appendChild(item);
+  }
+}
+
+function doReconnect(sid, accountsInfo) {
+  const isMySession = localStorage.getItem('session_id') === sid;
 
   let savedAccounts = [];
-  try {
-    savedAccounts = JSON.parse(localStorage.getItem('session_accounts') || '[]');
-  } catch(e) {}
+  if (isMySession) {
+    try { savedAccounts = JSON.parse(localStorage.getItem('session_accounts') || '[]'); } catch(e) {}
+  }
 
-  // Restore account cards (replace any auto-created empty ones with saved config)
-  for (const accData of savedAccounts) {
+  // Use full saved config (own device) or minimal info from server (other device)
+  const accountsToRestore = savedAccounts.length ? savedAccounts : (accountsInfo || []).map(a => ({
+    id: a.id, name: a.name,
+    openrcVars: {}, token: '', proxy: '',
+    ips: [], selectedIPId: null, selectedIP: null, checked: true,
+  }));
+
+  for (const accData of accountsToRestore) {
     const existing = getAccount(accData.id);
     if (existing) {
       accounts = accounts.filter(a => a.id !== accData.id);
@@ -955,40 +1016,34 @@ function doReconnect() {
     renderAccount(acc);
   }
 
-  // Restore settings
-  try {
-    const s = JSON.parse(localStorage.getItem('session_settings') || '{}');
-    if (s.delayMin !== undefined)        document.getElementById('delayMin').value = s.delayMin;
-    if (s.delayMax !== undefined)        document.getElementById('delayMax').value = s.delayMax;
-    if (s.longPauseChance !== undefined) document.getElementById('longPauseChance').value = s.longPauseChance;
-    if (s.longPauseMin !== undefined)    document.getElementById('longPauseMin').value = s.longPauseMin;
-    if (s.longPauseMax !== undefined)    document.getElementById('longPauseMax').value = s.longPauseMax;
-    if (s.timerEnabled !== undefined)    document.getElementById('timerEnabled').checked = s.timerEnabled;
-    if (s.timerMinutes !== undefined)    document.getElementById('timerMinutes').value = s.timerMinutes;
-  } catch(e) {}
+  if (isMySession) {
+    try {
+      const s = JSON.parse(localStorage.getItem('session_settings') || '{}');
+      if (s.delayMin !== undefined)        document.getElementById('delayMin').value = s.delayMin;
+      if (s.delayMax !== undefined)        document.getElementById('delayMax').value = s.delayMax;
+      if (s.longPauseChance !== undefined) document.getElementById('longPauseChance').value = s.longPauseChance;
+      if (s.longPauseMin !== undefined)    document.getElementById('longPauseMin').value = s.longPauseMin;
+      if (s.longPauseMax !== undefined)    document.getElementById('longPauseMax').value = s.longPauseMax;
+      if (s.timerEnabled !== undefined)    document.getElementById('timerEnabled').checked = s.timerEnabled;
+      if (s.timerMinutes !== undefined)    document.getElementById('timerMinutes').value = s.timerMinutes;
+    } catch(e) {}
 
-  // Resume timer if it hasn't expired yet
-  const timerEndsAt = parseInt(localStorage.getItem('timer_ends_at') || '0');
-  if (timerEndsAt > Date.now()) startTimer(timerEndsAt);
+    const timerEndsAt = parseInt(localStorage.getItem('timer_ends_at') || '0');
+    if (timerEndsAt > Date.now()) startTimer(timerEndsAt);
+  }
 
-  currentSessionId = sid;
-  abortController = new AbortController();
-  setRunning(true);
+  runningSessions.add(sid);
+  sessionAborts[sid] = new AbortController();
+  updateRunningUI();
 
-  for (const acc of savedAccounts) {
+  for (const acc of accountsToRestore) {
     getOrCreateLogSection(acc.id, acc.name);
     clearLog(acc.id);
     setBanner(acc.id, 'running', 'Переподключение...');
   }
 
-  connectStream(sid, savedAccounts);
-}
-
-function dismissReconnect() {
-  document.getElementById('reconnectBanner').classList.remove('show');
-  localStorage.removeItem('session_id');
-  localStorage.removeItem('session_accounts');
-  localStorage.removeItem('session_settings');
+  connectStream(sid, accountsToRestore);
+  loadSessionsPanel();
 }
 
 // =============================================================================
@@ -1069,22 +1124,18 @@ function setBanner(accId, type, text) {
 }
 
 // =============================================================================
-// Global running state
+// Running UI state
 // =============================================================================
-function setRunning(running) {
-  isRunning = running;
-  document.getElementById('btnStartAll').disabled = running;
+function updateRunningUI() {
+  const running = runningSessions.size > 0;
   document.getElementById('btnStartAll').textContent =
-    running ? 'Выполняется...' : 'Запустить поиск на выбранных';
+    running ? 'Запустить ещё' : 'Запустить поиск на выбранных';
   document.getElementById('btnStopAll').style.display =
     running ? 'inline-block' : 'none';
-
   accounts.forEach(acc => {
     const btn = document.getElementById('btnReplace_' + acc.id);
     if (btn) btn.disabled = running || !acc.selectedIPId;
   });
-
-  if (!running) abortController = null;
 }
 
 // =============================================================================
@@ -1146,7 +1197,8 @@ async function checkIP() {
 // Init
 // =============================================================================
 addAccount();
-checkReconnect();
+loadSessionsPanel();
+setInterval(loadSessionsPanel, 10_000);
 </script>
 </body>
 </html>

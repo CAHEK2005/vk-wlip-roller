@@ -85,6 +85,7 @@ _USER_AGENTS = [
 @dataclass
 class Session:
     id: str
+    accounts_info: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     queues: list[asyncio.Queue] = field(default_factory=list)
     tasks: list = field(default_factory=list)
@@ -541,6 +542,10 @@ async def api_start(request: Request) -> JSONResponse:
 
     session_id = str(uuid.uuid4())
     session = Session(id=session_id)
+    session.accounts_info = [
+        {"id": acc["id"], "name": acc.get("name", acc["id"])}
+        for acc in accounts
+    ]
     SESSIONS[session_id] = session
 
     remaining = [len(accounts)]
@@ -638,10 +643,20 @@ async def api_stop(request: Request) -> JSONResponse:
 async def api_sessions(request: Request) -> JSONResponse:
     """List active sessions (used by frontend for reconnect check)."""
     active = [
-        {"session_id": s.id, "done": s.done, "events": len(s.events)}
+        {"session_id": s.id, "done": s.done, "events": len(s.events), "accounts": s.accounts_info}
         for s in SESSIONS.values()
     ]
     return JSONResponse({"sessions": active})
+
+
+async def api_stop_all(request: Request) -> JSONResponse:
+    """Cancel all tasks for all sessions."""
+    count = len(SESSIONS)
+    for session in list(SESSIONS.values()):
+        for task in session.tasks:
+            task.cancel()
+    SESSIONS.clear()
+    return JSONResponse({"ok": True, "stopped": count})
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +671,7 @@ routes = [
     Route("/api/start", api_start, methods=["POST"]),
     Route("/api/stream", api_stream),
     Route("/api/stop", api_stop, methods=["POST"]),
+    Route("/api/stop-all", api_stop_all, methods=["POST"]),
     Route("/api/sessions", api_sessions),
 ]
 
