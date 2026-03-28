@@ -120,7 +120,7 @@ def _make_client(proxy_url: str | None) -> httpx.AsyncClient:
     ua = random.choice(_USER_AGENTS)
     headers = {"User-Agent": ua}
     if proxy_url:
-        return httpx.AsyncClient(proxies={"all://": proxy_url}, headers=headers)
+        return httpx.AsyncClient(proxy=proxy_url, headers=headers)
     return httpx.AsyncClient(headers=headers)
 
 
