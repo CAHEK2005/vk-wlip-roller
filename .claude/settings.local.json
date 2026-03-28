@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(cat /c/Users/admin/Documents/GitHub/vk-wlip-roller/.claude/*.md)",
+      "Bash(pip3 list:*)",
+      "Bash(python3:*)",
+      "Bash(/c/Users/admin/AppData/Local/Programs/Python/Python313/python --version)",
+      "Bash(/c/Users/admin/AppData/Local/Programs/Python/Python313/python -m pip list)",
+      "Bash(/c/Users/admin/AppData/Local/Programs/Python/Python313/python -c \"\nimport starlette\nprint\\('starlette version:', starlette.__version__\\)\nimport sse_starlette\nprint\\('sse_starlette available'\\)\nimport httpx\nprint\\('httpx version:', httpx.__version__\\)\nimport ipaddress\nprint\\('ipaddress available'\\)\n\")",
+      "Bash(/c/Users/admin/AppData/Local/Programs/Python/Python313/python -c \"\nfrom sse_starlette.sse import EventSourceResponse\nprint\\('EventSourceResponse import OK'\\)\nfrom starlette.applications import Starlette\nfrom starlette.routing import Route\nfrom starlette.requests import Request\nfrom starlette.responses import JSONResponse, HTMLResponse\nprint\\('Starlette routing imports OK'\\)\nimport asyncio\nprint\\('All imports OK'\\)\n\")",
+      "Bash(pkill -f \"python app.py\")",
+      "Bash(python app.py)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":8000\")",
+      "Bash(findstr LISTENING)",
+      "Bash(taskkill /PID 36200 /F)",
+      "Bash(cmd /c \"taskkill /PID 36200 /F\")",
+      "Bash(cmd /c \"netstat -ano | findstr \\\\\":8000\\\\\" | findstr LISTENING\")",
+      "Bash(pip install:*)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(C:/Users/admin/Documents/GitHub/vk-wlip-roller/.gitattributes:*)"
+    ]
+  }
+}
