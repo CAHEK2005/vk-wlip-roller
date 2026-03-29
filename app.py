@@ -334,7 +334,6 @@ async def run_rolling_loop(
         attempt = 0
         prev_fip: dict | None = None
         rate_limit_wait = RATE_LIMIT_BASE
-        ua_rotate_at = random.randint(10, 30)
 
         try:
             while True:
@@ -367,13 +366,6 @@ async def run_rolling_loop(
                         return
 
                 attempt += 1
-
-                # Periodic UA rotation (lightweight: no re-auth, just new client)
-                if attempt >= ua_rotate_at:
-                    yield ev("status", "Смена User-Agent...")
-                    await client.aclose()
-                    client = _make_client(proxy_url)
-                    ua_rotate_at = attempt + random.randint(10, 30)
 
                 # Delete previous non-matching IP before allocating new one
                 if prev_fip:
