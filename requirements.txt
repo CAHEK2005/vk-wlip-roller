@@ -3,3 +3,4 @@ sse-starlette
 uvicorn[standard]
 httpx[socks]
 python-multipart
+cryptography

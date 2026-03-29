@@ -3,6 +3,8 @@ mcs*-openrc.sh
 *-openrc.sh
 token
 *.token
+authorized_key.json
+*authorized_key*.json
 
 # Runtime
 .port

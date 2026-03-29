@@ -207,6 +207,39 @@
       flex-shrink: 0;
     }
 
+    /* Provider tabs */
+    .tab-bar {
+      display: flex;
+      gap: 0;
+      margin-bottom: 12px;
+      border-bottom: 1px solid #30363d;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #8b949e;
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 8px 16px;
+      cursor: pointer;
+      margin-bottom: -1px;
+    }
+    .tab-btn.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+    .tab-btn:hover:not(.active) { color: #c9d1d9; }
+
+    .provider-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .badge-vk { background: #1c4980; color: #79c0ff; }
+    .badge-yc { background: #3d2400; color: #e3985c; }
+
     /* Settings row */
     .settings-row {
       display: flex;
@@ -318,8 +351,8 @@
 <body>
 <div class="container">
 
-  <h1>VK Cloud Whitelist IP Roller</h1>
-  <p class="subtitle">Поиск Floating IP из белого списка подсетей — с поддержкой нескольких аккаунтов и прокси</p>
+  <h1>Cloud Whitelist IP Roller</h1>
+  <p class="subtitle">Поиск внешних IP из белого списка подсетей — VK Cloud и Yandex Cloud</p>
 
   <!-- Sessions panel -->
   <div id="sessionsPanel" style="display:none; margin-bottom:14px;">
@@ -329,12 +362,50 @@
 
   <!-- Accounts card -->
   <div class="card">
-    <div class="card-header">
-      <div class="card-title">Аккаунты</div>
-      <button class="btn-secondary" onclick="addAccount()">+ Добавить аккаунт</button>
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tabBtnVK" onclick="switchTab('vk')">VK Cloud</button>
+      <button class="tab-btn" id="tabBtnYC" onclick="switchTab('yc')">Yandex Cloud</button>
     </div>
-    <div id="accountsList">
-      <!-- account cards rendered here -->
+    <div id="panelVK">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button class="btn-secondary" onclick="addVKAccount()">+ Добавить аккаунт VK</button>
+      </div>
+      <div id="vkAccountsList"></div>
+    </div>
+    <div id="panelYC" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button class="btn-secondary" onclick="addYCAccount()">+ Добавить аккаунт YC</button>
+      </div>
+      <div id="ycAccountsList"></div>
+    </div>
+  </div>
+
+  <!-- Whitelist card -->
+  <div class="card">
+    <div class="card-title" style="margin-bottom:10px;">Белый список подсетей</div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;">
+        <input type="radio" name="whitelistMode" value="default" checked
+               onchange="setWhitelistMode('default')"
+               style="accent-color:#238636;width:14px;height:14px;margin:0;">
+        Стандартный
+        <span id="defaultWhitelistLabel" style="color:#8b949e;font-size:0.78rem;">
+          (cidrwhitelist.txt — загрузка...)
+        </span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;">
+        <input type="radio" name="whitelistMode" value="custom"
+               onchange="setWhitelistMode('custom')"
+               style="accent-color:#238636;width:14px;height:14px;margin:0;">
+        Свой список
+        <input type="file" id="customWhitelistFile" accept=".txt,text/plain"
+               style="display:none;" onchange="loadCustomWhitelist(this)">
+        <button class="btn-secondary" id="btnPickWhitelist" style="display:none;font-size:0.75rem;padding:4px 10px;"
+                onclick="document.getElementById('customWhitelistFile').click()">
+          Выбрать файл
+        </button>
+        <span id="customWhitelistStatus" style="font-size:0.78rem;color:#8b949e;"></span>
+      </label>
     </div>
   </div>
 
@@ -415,25 +486,94 @@ let sessionAborts = {};            // session_id -> AbortController
 let accountCounter = 0;
 let timerHandle = null;
 let timerCountdownHandle = null;
+let currentTab = 'vk';
+let customWhitelist = null;  // null = use default; array of strings = custom CIDRs
+
+// =============================================================================
+// Whitelist selection
+// =============================================================================
+function setWhitelistMode(mode) {
+  const btn = document.getElementById('btnPickWhitelist');
+  const status = document.getElementById('customWhitelistStatus');
+  if (mode === 'custom') {
+    btn.style.display = '';
+    if (!customWhitelist) status.textContent = 'файл не выбран';
+  } else {
+    btn.style.display = 'none';
+    status.textContent = '';
+  }
+}
+
+function loadCustomWhitelist(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('customWhitelistStatus');
+  status.style.color = '#8b949e';
+  status.textContent = 'Загрузка...';
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const lines = e.target.result.split('\n');
+    const cidrs = lines
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('#'));
+    customWhitelist = cidrs;
+    status.style.color = '#3fb950';
+    status.textContent = `${cidrs.length.toLocaleString('ru')} сетей загружено`;
+  };
+  reader.readAsText(file);
+}
+
+function getActiveWhitelist() {
+  const mode = document.querySelector('input[name="whitelistMode"]:checked')?.value;
+  return mode === 'custom' && customWhitelist ? customWhitelist : null;
+}
+
+async function fetchDefaultWhitelistInfo() {
+  try {
+    const r = await fetch('/api/whitelist-info');
+    const d = await r.json();
+    const el = document.getElementById('defaultWhitelistLabel');
+    if (el) el.textContent = `(${d.file} — ${d.count.toLocaleString('ru')} сетей)`;
+  } catch(e) {}
+}
+
+// =============================================================================
+// Tab switching
+// =============================================================================
+function switchTab(type) {
+  currentTab = type;
+  document.getElementById('panelVK').style.display = type === 'vk' ? '' : 'none';
+  document.getElementById('panelYC').style.display = type === 'yc' ? '' : 'none';
+  document.getElementById('tabBtnVK').className = 'tab-btn' + (type === 'vk' ? ' active' : '');
+  document.getElementById('tabBtnYC').className = 'tab-btn' + (type === 'yc' ? ' active' : '');
+}
 
 // =============================================================================
 // Account management
 // =============================================================================
-function addAccount() {
+function addVKAccount() {
   const id = 'acc_' + (++accountCounter);
   const acc = {
-    id,
-    name: 'Аккаунт ' + accountCounter,
-    openrcVars: {},
-    token: '',
-    proxy: '',
-    ips: [],
-    selectedIPId: null,
-    selectedIP: null,
-    checked: true,
+    id, type: 'vk',
+    name: 'VK ' + accountCounter,
+    openrcVars: {}, token: '', proxy: '',
+    ips: [], selectedIPId: null, selectedIP: null, checked: true,
   };
   accounts.push(acc);
   renderAccount(acc);
+}
+
+function addYCAccount() {
+  const id = 'acc_' + (++accountCounter);
+  const acc = {
+    id, type: 'yc',
+    name: 'YC ' + accountCounter,
+    keyId: '', saId: '', privateKey: '',
+    folderId: '', zones: ['ru-central1-a'],
+    proxy: '', ips: [], selectedIPId: null, selectedIP: null, checked: true,
+  };
+  accounts.push(acc);
+  renderYCAccount(acc);
 }
 
 function removeAccount(id) {
@@ -447,7 +587,7 @@ function getAccount(id) {
 }
 
 function renderAccount(acc) {
-  const list = document.getElementById('accountsList');
+  const list = document.getElementById('vkAccountsList');
   const div = document.createElement('div');
   div.className = 'account-card';
   div.id = 'card_' + acc.id;
@@ -519,9 +659,128 @@ function renderAccount(acc) {
   }
 }
 
+function renderYCAccount(acc) {
+  const list = document.getElementById('ycAccountsList');
+  const div = document.createElement('div');
+  div.className = 'account-card';
+  div.id = 'card_' + acc.id;
+  const allZones = ['ru-central1-a','ru-central1-b','ru-central1-d','ru-central1-e'];
+  const zoneCheckboxes = allZones.map(z => {
+    const checked = (acc.zones || ['ru-central1-a']).includes(z) ? 'checked' : '';
+    return `<label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:#c9d1d9;cursor:pointer;">
+      <input type="checkbox" ${checked} style="width:13px;height:13px;margin:0;"
+             onchange="toggleZone('${acc.id}','${z}',this.checked)"> ${z.replace('ru-central1-','')}
+    </label>`;
+  }).join('');
+  div.innerHTML = `
+    <div class="account-header">
+      <input type="checkbox" id="chk_${acc.id}" checked onchange="toggleAccount('${acc.id}', this.checked)">
+      <span class="provider-badge badge-yc">YC</span>
+      <input class="account-name-input" type="text" value="${acc.name}"
+             oninput="getAccount('${acc.id}').name = this.value; updateLogLabel('${acc.id}', this.value)">
+      <button class="btn-icon" onclick="removeAccount('${acc.id}')" title="Удалить аккаунт">×</button>
+    </div>
+
+    <div class="field-row">
+      <span class="field-label">authorized_key</span>
+      <input type="file" accept=".json,application/json" onchange="parseAuthorizedKey('${acc.id}', this)">
+      <span class="openrc-status" id="key_status_${acc.id}"></span>
+    </div>
+
+    <div class="field-row">
+      <span class="field-label">Folder ID</span>
+      <input type="text" placeholder="b1xxxxxxxxxxxxxxxxx"
+             oninput="getAccount('${acc.id}').folderId = this.value">
+    </div>
+
+    <div class="field-row" style="align-items:flex-start;">
+      <span class="field-label" style="padding-top:4px;">Зоны</span>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">${zoneCheckboxes}</div>
+    </div>
+
+    <div class="field-row">
+      <span class="field-label">Прокси</span>
+      <input type="text" placeholder="socks5://user:pass@host:1080  или  http://host:3128"
+             oninput="getAccount('${acc.id}').proxy = this.value">
+      <button class="btn-secondary" style="font-size:0.72rem;padding:5px 10px;"
+              onclick="checkProxy('${acc.id}')">Проверить</button>
+      <span id="proxy_status_${acc.id}" style="font-family:monospace;font-size:0.75rem;"></span>
+    </div>
+    <div class="field-hint">Необязательно. Поддерживаются socks5:// и http://</div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+      <button class="btn-secondary" id="btnLoad_${acc.id}" onclick="loadYCIPs('${acc.id}')">Загрузить IP</button>
+      <span id="load_status_${acc.id}" style="font-size:0.75rem;color:#8b949e;"></span>
+    </div>
+
+    <div id="ip_list_${acc.id}" class="ip-list-small">
+      <div class="empty-hint">Нажмите "Загрузить IP"</div>
+    </div>
+
+    <div class="replace-label" id="replace_label_${acc.id}">
+      Выбранный для замены: <span>не выбран</span>
+    </div>
+    <div style="margin-top:8px;">
+      <button class="btn-danger" id="btnReplace_${acc.id}" onclick="startReplace('${acc.id}')" disabled>
+        Заменить выбранный IP
+      </button>
+    </div>
+  `;
+  list.appendChild(div);
+
+  if (acc.folderId) {
+    const folderEl = div.querySelector('input[placeholder*="b1"]');
+    if (folderEl) folderEl.value = acc.folderId;
+  }
+  if (acc.proxy) {
+    const proxyEl = div.querySelector('input[placeholder*="socks5"]');
+    if (proxyEl) proxyEl.value = acc.proxy;
+  }
+  if (acc.keyId) {
+    const el = document.getElementById('key_status_' + acc.id);
+    if (el) { el.className = 'openrc-status openrc-ok'; el.textContent = acc.keyId.slice(0, 8) + '...'; }
+  }
+}
+
+function toggleZone(accId, zone, checked) {
+  const acc = getAccount(accId);
+  if (!acc) return;
+  if (!acc.zones) acc.zones = [];
+  if (checked) { if (!acc.zones.includes(zone)) acc.zones.push(zone); }
+  else { acc.zones = acc.zones.filter(z => z !== zone); }
+}
+
 function toggleAccount(id, checked) {
   const acc = getAccount(id);
   if (acc) acc.checked = checked;
+}
+
+// =============================================================================
+// authorized_key.json parsing
+// =============================================================================
+function parseAuthorizedKey(accId, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const key = JSON.parse(e.target.result);
+      const acc = getAccount(accId);
+      if (!acc) return;
+      acc.keyId = key.id || '';
+      acc.saId = key.service_account_id || '';
+      acc.privateKey = key.private_key || '';
+      const el = document.getElementById('key_status_' + accId);
+      if (el) {
+        el.className = 'openrc-status openrc-ok';
+        el.textContent = (acc.keyId || '').slice(0, 8) + '...';
+      }
+    } catch(err) {
+      const el = document.getElementById('key_status_' + accId);
+      if (el) { el.className = 'openrc-status openrc-err'; el.textContent = 'Ошибка парсинга JSON'; }
+    }
+  };
+  reader.readAsText(file);
 }
 
 // =============================================================================
@@ -560,15 +819,22 @@ function parseOpenRC(accId, input) {
 // =============================================================================
 function getCredParams(acc) {
   return {
-    auth_url:   acc.openrcVars['OS_AUTH_URL']   || '',
-    project_id: acc.openrcVars['OS_PROJECT_ID'] || '',
-    region:     acc.openrcVars['OS_REGION_NAME'] || 'RegionOne',
+    auth_url:   (acc.openrcVars || {})['OS_AUTH_URL']   || '',
+    project_id: (acc.openrcVars || {})['OS_PROJECT_ID'] || '',
+    region:     (acc.openrcVars || {})['OS_REGION_NAME'] || 'RegionOne',
     api_token:  acc.token || '',
     proxy_url:  acc.proxy || '',
   };
 }
 
 function validateAcc(acc) {
+  if (acc.type === 'yc') {
+    const problems = [];
+    if (!acc.keyId || !acc.saId || !acc.privateKey) problems.push('Загрузите файл authorized_key.json');
+    if (!acc.folderId) problems.push('Введите Folder ID');
+    if (!acc.zones || !acc.zones.length) problems.push('Выберите хотя бы одну зону');
+    return problems;
+  }
   const c = getCredParams(acc);
   const problems = [];
   if (!c.auth_url)   problems.push('Загрузите OpenRC файл');
@@ -611,10 +877,46 @@ async function loadIPs(accId) {
   }
 }
 
-function renderIPList(accId, ips) {
+async function loadYCIPs(accId) {
+  const acc = getAccount(accId);
+  if (!acc) return;
+  const problems = validateAcc(acc);
+  if (problems.length) { alert(acc.name + ':\n' + problems.join('\n')); return; }
+
+  const btn = document.getElementById('btnLoad_' + accId);
+  const statusEl = document.getElementById('load_status_' + accId);
+  btn.disabled = true;
+  btn.textContent = 'Загрузка...';
+  statusEl.textContent = '';
+
+  try {
+    const r = await fetch('/api/yc-ips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key_id: acc.keyId, sa_id: acc.saId, private_key: acc.privateKey,
+        folder_id: acc.folderId, proxy_url: acc.proxy || null,
+      }),
+    });
+    const d = await r.json();
+    if (d.error) { statusEl.style.color = '#f85149'; statusEl.textContent = d.error; return; }
+    acc.ips = d.ips;
+    statusEl.style.color = '#3fb950';
+    statusEl.textContent = d.ips.length + ' IP загружено';
+    renderIPList(accId, d.ips, true);
+  } catch (e) {
+    statusEl.style.color = '#f85149';
+    statusEl.textContent = 'Ошибка: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Загрузить IP';
+  }
+}
+
+function renderIPList(accId, ips, isYC = false) {
   const list = document.getElementById('ip_list_' + accId);
   if (!ips || !ips.length) {
-    list.innerHTML = '<div class="empty-hint">Floating IP не найдены</div>';
+    list.innerHTML = '<div class="empty-hint">IP-адреса не найдены</div>';
     return;
   }
   list.innerHTML = '';
@@ -624,10 +926,11 @@ function renderIPList(accId, ips) {
     const bc = ip.status === 'ACTIVE' ? 'badge-active'
              : ip.status === 'DOWN'   ? 'badge-down'
              : 'badge-other';
+    const extra = isYC ? (ip.zone ? `<span class="ip-fixed">${ip.zone.replace('ru-central1-','')}</span>` : '') : `<span class="ip-fixed">${ip.fixed_ip || 'free'}</span>`;
     item.innerHTML = `
       <span class="ip-addr">${ip.ip}</span>
       <span class="ip-badge ${bc}">${ip.status}</span>
-      <span class="ip-fixed">${ip.fixed_ip || 'free'}</span>
+      ${extra}
     `;
     item.addEventListener('click', () => selectIP(accId, ip.id, ip.ip, item));
     list.appendChild(item);
@@ -651,16 +954,25 @@ function selectIP(accId, id, ip, el) {
 // Start / Stop
 // =============================================================================
 function buildAccountPayload(acc, mode) {
+  const oldIpId = (mode === 'replace' && acc.selectedIPId) ? acc.selectedIPId : '';
+  if (acc.type === 'yc') {
+    return {
+      type: 'yc',
+      id: acc.id, name: acc.name,
+      key_id: acc.keyId, sa_id: acc.saId, private_key: acc.privateKey,
+      folder_id: acc.folderId, zones: acc.zones || ['ru-central1-a'],
+      proxy_url: acc.proxy || null,
+      old_ip_id: oldIpId,
+    };
+  }
   const c = getCredParams(acc);
   return {
-    id:         acc.id,
-    name:       acc.name,
-    auth_url:   c.auth_url,
-    project_id: c.project_id,
-    region:     c.region,
-    api_token:  c.api_token,
-    proxy_url:  c.proxy_url,
-    old_ip_id:  (mode === 'replace' && acc.selectedIPId) ? acc.selectedIPId : '',
+    type: 'vk',
+    id: acc.id, name: acc.name,
+    auth_url: c.auth_url, project_id: c.project_id,
+    region: c.region, api_token: c.api_token,
+    proxy_url: c.proxy_url,
+    old_ip_id: oldIpId,
   };
 }
 
@@ -695,6 +1007,7 @@ function startAll() {
     rest_every: restEnabled ? restEvery : 0,
     rest_min: restMin,
     rest_max: restMax,
+    custom_whitelist: getActiveWhitelist(),
     accounts: selected.map(acc => buildAccountPayload(acc, 'find')),
   };
 
@@ -727,6 +1040,7 @@ function startReplace(accId) {
     rest_every: restEnabled ? restEvery : 0,
     rest_min: restMin,
     rest_max: restMax,
+    custom_whitelist: getActiveWhitelist(),
     accounts: [buildAccountPayload(acc, 'replace')],
   };
 
@@ -764,11 +1078,15 @@ async function launchStream(body, involvedAccounts) {
 
   localStorage.setItem('session_id', sessionId);
   localStorage.setItem('session_accounts', JSON.stringify(
-    involvedAccounts.map(a => ({
-      id: a.id, name: a.name,
-      openrcVars: a.openrcVars, token: a.token, proxy: a.proxy,
-      selectedIPId: a.selectedIPId, selectedIP: a.selectedIP, checked: a.checked,
-    }))
+    involvedAccounts.map(a => {
+      const base = { id: a.id, name: a.name, type: a.type || 'vk', proxy: a.proxy,
+                     selectedIPId: a.selectedIPId, selectedIP: a.selectedIP, checked: a.checked };
+      if (a.type === 'yc') {
+        return { ...base, keyId: a.keyId, saId: a.saId, privateKey: a.privateKey,
+                 folderId: a.folderId, zones: a.zones };
+      }
+      return { ...base, openrcVars: a.openrcVars, token: a.token };
+    })
   ));
   localStorage.setItem('session_settings', JSON.stringify({
     delayMin:        document.getElementById('delayMin').value,
@@ -1018,7 +1336,7 @@ function doReconnect(sid, accountsInfo) {
 
   // Use full saved config (own device) or minimal info from server (other device)
   const accountsToRestore = savedAccounts.length ? savedAccounts : (accountsInfo || []).map(a => ({
-    id: a.id, name: a.name,
+    id: a.id, name: a.name, type: a.type || 'vk',
     openrcVars: {}, token: '', proxy: '',
     ips: [], selectedIPId: null, selectedIP: null, checked: true,
   }));
@@ -1032,19 +1350,23 @@ function doReconnect(sid, accountsInfo) {
     const num = parseInt(accData.id.replace('acc_', '')) || 0;
     if (num > accountCounter) accountCounter = num;
 
+    const accType = accData.type || 'vk';
     const acc = {
-      id: accData.id,
-      name: accData.name,
-      openrcVars: accData.openrcVars || {},
-      token: accData.token || '',
+      id: accData.id, name: accData.name, type: accType,
       proxy: accData.proxy || '',
-      ips: [],
-      selectedIPId: accData.selectedIPId || null,
-      selectedIP: accData.selectedIP || null,
-      checked: accData.checked !== false,
+      ips: [], selectedIPId: accData.selectedIPId || null,
+      selectedIP: accData.selectedIP || null, checked: accData.checked !== false,
+      // VK fields
+      openrcVars: accData.openrcVars || {}, token: accData.token || '',
+      // YC fields
+      keyId: accData.keyId || '', saId: accData.saId || '',
+      privateKey: accData.privateKey || '',
+      folderId: accData.folderId || '',
+      zones: accData.zones || ['ru-central1-a'],
     };
     accounts.push(acc);
-    renderAccount(acc);
+    if (accType === 'yc') renderYCAccount(acc);
+    else renderAccount(acc);
   }
 
   if (isMySession) {
@@ -1094,16 +1416,18 @@ function handleSSEEvent(event, rawData) {
     addLog(accId, 'info', d.msg || rawData);
 
   } else if (event === 'attempt') {
+    const zoneTag = d.zone ? ` [${d.zone.replace('ru-central1-','')}]` : '';
     if (d.match) {
-      addLog(accId, 'hit', `[#${d.n}] ${d.ip}  — НАЙДЕН!  сеть: ${d.match}`);
+      addLog(accId, 'hit', `[#${d.n}] ${d.ip}${zoneTag}  — НАЙДЕН!  сеть: ${d.match}`);
     } else {
-      addLog(accId, 'miss', `[#${d.n}] ${d.ip}  — не в белом списке`);
+      addLog(accId, 'miss', `[#${d.n}] ${d.ip}${zoneTag}  — не в белом списке`);
     }
 
   } else if (event === 'success') {
-    addLog(accId, 'hit', `Найден: ${d.ip}  (${d.network})  за ${d.attempts} попытки`);
+    const zoneTag = d.zone ? `  зона: ${d.zone}` : '';
+    addLog(accId, 'hit', `Найден: ${d.ip}  (${d.network})${zoneTag}  за ${d.attempts} попытки`);
     setBanner(accId, 'success',
-      `IP из белого списка: ${d.ip}  (${d.network})  попыток: ${d.attempts}`);
+      `IP из белого списка: ${d.ip}  (${d.network})${zoneTag}  попыток: ${d.attempts}`);
 
   } else if (event === 'error') {
     addLog(accId, 'warn', 'ОШИБКА: ' + (d.msg || rawData));
@@ -1231,8 +1555,9 @@ async function checkIP() {
 // =============================================================================
 // Init
 // =============================================================================
-addAccount();
+addVKAccount();
 loadSessionsPanel();
+fetchDefaultWhitelistInfo();
 setInterval(loadSessionsPanel, 10_000);
 </script>
 </body>

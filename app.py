@@ -8,10 +8,12 @@ Supports multiple accounts with parallel search and per-account proxy (SOCKS5/HT
 """
 
 import asyncio
+import base64
 import ipaddress
 import json
 import os
 import random
+import time as _time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -19,6 +21,8 @@ from pathlib import Path
 
 import httpx
 import uvicorn
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -105,12 +109,16 @@ class RateLimitError(Exception):
         super().__init__(f"Rate limit — wait {wait:.0f}s")
 
 
-def ip_in_whitelist(ip_str: str) -> ipaddress.IPv4Network | None:
+def ip_in_whitelist(
+    ip_str: str,
+    whitelist: list[ipaddress.IPv4Network] | None = None,
+) -> ipaddress.IPv4Network | None:
+    wl = whitelist if whitelist is not None else WHITELIST
     try:
         addr = ipaddress.ip_address(ip_str)
     except ValueError:
         return None
-    for net in WHITELIST:
+    for net in wl:
         if addr in net:
             return net
     return None
@@ -266,7 +274,323 @@ async def delete_floating_ip(
 
 
 # ---------------------------------------------------------------------------
-# Core rolling loop (single account)
+# Yandex Cloud auth & VPC helpers
+# ---------------------------------------------------------------------------
+
+_YC_IAM_URL = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
+_YC_VPC_URL = "https://vpc.api.cloud.yandex.net/vpc/v1"
+_YC_OPS_URL = "https://operation.api.cloud.yandex.net/operations"
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _make_yc_jwt(key_id: str, sa_id: str, private_key_pem: str) -> str:
+    """Create a signed RS256 JWT for Yandex Cloud service account auth."""
+    header = _b64url(json.dumps(
+        {"typ": "JWT", "alg": "PS256", "kid": key_id}, separators=(",", ":")
+    ).encode())
+    now = int(_time.time())
+    payload = _b64url(json.dumps({
+        "iss": sa_id,
+        "aud": _YC_IAM_URL,
+        "iat": now,
+        "exp": now + 3600,
+    }, separators=(",", ":")).encode())
+    signing_input = f"{header}.{payload}".encode()
+    private_key = serialization.load_pem_private_key(
+        private_key_pem.encode(), password=None
+    )
+    signature = private_key.sign(
+        signing_input,
+        asym_padding.PSS(mgf=asym_padding.MGF1(hashes.SHA256()), salt_length=32),
+        hashes.SHA256(),
+    )
+    return f"{header}.{payload}.{_b64url(signature)}"
+
+
+async def get_yc_iam_token(
+    client: httpx.AsyncClient,
+    key_id: str,
+    sa_id: str,
+    private_key_pem: str,
+) -> tuple[str, datetime]:
+    """Exchange service account JWT for an IAM token (valid ~12 h)."""
+    jwt = _make_yc_jwt(key_id, sa_id, private_key_pem)
+    resp = await client.post(_YC_IAM_URL, json={"jwt": jwt}, timeout=30)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Ошибка получения IAM токена YC ({resp.status_code}): {resp.text[:500]}"
+        )
+    data = resp.json()
+    iam_token = data["iamToken"]
+    expires_str = data.get("expiresAt", "")
+    try:
+        expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
+    return iam_token, expires_at
+
+
+async def _poll_yc_operation(
+    client: httpx.AsyncClient, iam_token: str, op_id: str, timeout: float = 60.0
+) -> dict:
+    """Poll YC operation until done, return response dict."""
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout)
+    while True:
+        resp = await client.get(
+            f"{_YC_OPS_URL}/{op_id}",
+            headers={"Authorization": f"Bearer {iam_token}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        op = resp.json()
+        if op.get("done"):
+            if "error" in op:
+                err = op["error"]
+                raise RuntimeError(
+                    f"Операция YC завершилась с ошибкой {err.get('code')}: {err.get('message', str(err))}"
+                )
+            return op.get("response", {})
+        if datetime.now(timezone.utc) >= deadline:
+            raise RuntimeError(f"Таймаут ожидания операции YC {op_id}")
+        await asyncio.sleep(1.0)
+
+
+async def allocate_yc_address(
+    client: httpx.AsyncClient, iam_token: str, folder_id: str, zone_id: str
+) -> dict:
+    """Allocate a new static external IP in the given zone. Returns address dict."""
+    name = "roller-" + uuid.uuid4().hex[:8]
+    resp = await client.post(
+        f"{_YC_VPC_URL}/addresses",
+        headers={"Authorization": f"Bearer {iam_token}"},
+        json={
+            "folderId": folder_id,
+            "name": name,
+            "externalIpv4AddressSpec": {"zoneId": zone_id},
+        },
+        timeout=30,
+    )
+    if resp.status_code == 429:
+        retry_after = float(resp.headers.get("Retry-After", RATE_LIMIT_BASE))
+        raise RateLimitError(retry_after)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Не удалось выделить адрес YC ({resp.status_code}): {resp.text[:300]}"
+        )
+    op = resp.json()
+    return await _poll_yc_operation(client, iam_token, op["id"])
+
+
+async def delete_yc_address(
+    client: httpx.AsyncClient, iam_token: str, address_id: str
+) -> None:
+    """Release a static external IP (fire-and-forget; errors are logged only)."""
+    resp = await client.delete(
+        f"{_YC_VPC_URL}/addresses/{address_id}",
+        headers={"Authorization": f"Bearer {iam_token}"},
+        timeout=30,
+    )
+    if resp.status_code == 404:
+        print(f"[warn] YC address {address_id} уже удалён (404)")
+        return
+    if resp.status_code not in (200, 201, 204):
+        print(f"[warn] YC DELETE {address_id} вернул {resp.status_code}: {resp.text[:200]}")
+
+
+async def list_yc_addresses(
+    client: httpx.AsyncClient, iam_token: str, folder_id: str
+) -> list[dict]:
+    resp = await client.get(
+        f"{_YC_VPC_URL}/addresses",
+        params={"folderId": folder_id},
+        headers={"Authorization": f"Bearer {iam_token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("addresses", [])
+
+
+# ---------------------------------------------------------------------------
+# Core rolling loop — Yandex Cloud (single account)
+# ---------------------------------------------------------------------------
+
+async def run_yc_rolling_loop(
+    creds: dict,
+    delay_min: float,
+    delay_max: float,
+    proxy_url: str | None,
+    account_id: str,
+    long_pause_chance: float = 0.0,
+    long_pause_min: float = 300.0,
+    long_pause_max: float = 1200.0,
+    rest_every: int = 0,
+    rest_min: float = 1800.0,
+    rest_max: float = 5400.0,
+    start_delay: float = 0.0,
+    whitelist: list[ipaddress.IPv4Network] | None = None,
+):
+    """
+    Async generator yielding SSE events for a single Yandex Cloud account.
+    Allocates static external IPs (round-robin across selected zones) until
+    one matches cidrwhitelist.txt.
+    """
+    def ev(event: str, data) -> dict:
+        return _sse_tagged(account_id, event, data)
+
+    if start_delay > 0:
+        yield ev("status", f"Ожидание старта {start_delay:.0f}с (разнос аккаунтов)...")
+        await asyncio.sleep(start_delay)
+
+    key_id = creds["key_id"]
+    sa_id = creds["sa_id"]
+    private_key_pem = creds["private_key"]
+    folder_id = creds["folder_id"]
+    zones: list[str] = creds.get("zones") or ["ru-central1-a"]
+    old_ip_id: str | None = creds.get("old_ip_id") or None
+
+    yield ev("status", "Получение IAM токена Yandex Cloud...")
+    client = _make_client(proxy_url)
+    try:
+        try:
+            iam_token, expires_at = await get_yc_iam_token(client, key_id, sa_id, private_key_pem)
+        except Exception as e:
+            yield ev("error", f"Ошибка аутентификации YC: {e}")
+            return
+
+        yield ev("status", f"IAM токен получен. Зоны: {', '.join(zones)}")
+        # Refresh 1-2 h before expiry (token lives 12 h)
+        refresh_at = expires_at - timedelta(seconds=random.uniform(3600, 7200))
+
+        # Replace mode: delete old IP first
+        if old_ip_id:
+            yield ev("status", f"Удаляем выбранный адрес {old_ip_id}...")
+            try:
+                await delete_yc_address(client, iam_token, old_ip_id)
+                old_ip_id = None
+                yield ev("status", "Удалён. Начинаем поиск замены...")
+            except Exception as e:
+                yield ev("error", f"Не удалось удалить выбранный адрес: {e}")
+                return
+
+        attempt = 0
+        prev_addr: dict | None = None  # {"id": ..., "ip": ...}
+        zone_idx = 0
+        rate_limit_wait = RATE_LIMIT_BASE
+
+        try:
+            while True:
+                # Proactive IAM token refresh
+                if datetime.now(timezone.utc) >= refresh_at:
+                    yield ev("status", "Обновление IAM токена...")
+                    refresh_ok = False
+                    for _retry in range(3):
+                        try:
+                            iam_token, expires_at = await get_yc_iam_token(
+                                client, key_id, sa_id, private_key_pem
+                            )
+                            refresh_at = expires_at - timedelta(seconds=random.uniform(3600, 7200))
+                            yield ev("status", "IAM токен обновлён.")
+                            refresh_ok = True
+                            break
+                        except Exception as e:
+                            if _retry < 2:
+                                wait = 30 * (_retry + 1)
+                                yield ev("status",
+                                         f"Ошибка обновления токена (попытка {_retry + 1}/3),"
+                                         f" повтор через {wait}с: {e}")
+                                await asyncio.sleep(wait)
+                            else:
+                                yield ev("error", f"Ошибка обновления IAM токена: {e}")
+                    if not refresh_ok:
+                        return
+
+                attempt += 1
+                zone_id = zones[zone_idx % len(zones)]
+                zone_idx += 1
+
+                # Delete previous non-matching address
+                if prev_addr:
+                    yield ev("status", f"Удаляем {prev_addr['ip']}...")
+                    await delete_yc_address(client, iam_token, prev_addr["id"])
+                    prev_addr = None
+                    delay = random.uniform(delay_min, delay_max)
+                    yield ev("status", f"Пауза {delay:.1f}с...")
+                    await asyncio.sleep(delay)
+
+                yield ev("status", f"Попытка {attempt} (зона {zone_id})...")
+
+                # Allocate with rate-limit retry
+                while True:
+                    try:
+                        addr = await allocate_yc_address(client, iam_token, folder_id, zone_id)
+                        rate_limit_wait = RATE_LIMIT_BASE
+                        break
+                    except RateLimitError as e:
+                        yield ev("status",
+                                 f"Лимит запросов API (429) — пауза {e.wait:.0f}с...")
+                        await asyncio.sleep(e.wait)
+                        rate_limit_wait = min(rate_limit_wait * 2, RATE_LIMIT_MAX)
+                    except Exception as e:
+                        yield ev("error", f"Ошибка выделения адреса YC: {e}")
+                        return
+
+                ip_str = addr.get("externalIpv4Address", {}).get("address", "")
+                matched_net = ip_in_whitelist(ip_str, whitelist)
+
+                yield ev("attempt", {
+                    "n": attempt,
+                    "ip": ip_str,
+                    "id": addr.get("id", ""),
+                    "match": str(matched_net) if matched_net else None,
+                    "zone": zone_id,
+                })
+
+                if matched_net:
+                    yield ev("success", {
+                        "ip": ip_str,
+                        "id": addr.get("id", ""),
+                        "network": str(matched_net),
+                        "attempts": attempt,
+                        "zone": zone_id,
+                    })
+                    return
+                else:
+                    prev_addr = {"id": addr.get("id", ""), "ip": ip_str}
+                    if long_pause_chance > 0 and random.random() < long_pause_chance:
+                        lp = random.uniform(long_pause_min, long_pause_max)
+                        yield ev("status",
+                                 f"Длинная пауза {lp/60:.1f} мин. (антиблок)...")
+                        await asyncio.sleep(lp)
+                    if rest_every > 0 and attempt % rest_every == 0:
+                        rest = random.uniform(rest_min, rest_max)
+                        yield ev("status",
+                                 f"Плановый отдых {rest/60:.0f} мин. (каждые {rest_every} попыток)...")
+                        await asyncio.sleep(rest)
+
+        except asyncio.CancelledError:
+            if prev_addr:
+                try:
+                    await delete_yc_address(client, iam_token, prev_addr["id"])
+                except Exception:
+                    pass
+            raise
+        except Exception as e:
+            if prev_addr:
+                try:
+                    await delete_yc_address(client, iam_token, prev_addr["id"])
+                except Exception:
+                    pass
+            yield ev("error", f"Ошибка: {e}")
+
+    finally:
+        await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Core rolling loop — VK Cloud (single account)
 # ---------------------------------------------------------------------------
 
 async def run_rolling_loop(
@@ -283,6 +607,7 @@ async def run_rolling_loop(
     rest_min: float = 1800.0,
     rest_max: float = 5400.0,
     start_delay: float = 0.0,
+    whitelist: list[ipaddress.IPv4Network] | None = None,
 ):
     """
     Async generator that yields SSE events tagged with account_id.
@@ -399,7 +724,7 @@ async def run_rolling_loop(
                         return
 
                 ip_str = fip["floating_ip_address"]
-                matched_net = ip_in_whitelist(ip_str)
+                matched_net = ip_in_whitelist(ip_str, whitelist)
 
                 yield ev("attempt", {
                     "n": attempt,
@@ -554,8 +879,10 @@ async def api_start(request: Request) -> JSONResponse:
     if not accounts:
         return JSONResponse({"error": "Не передано ни одного аккаунта"}, status_code=400)
 
-    required = ("auth_url", "project_id", "region", "api_token")
+    _required_vk = ("auth_url", "project_id", "region", "api_token")
+    _required_yc = ("key_id", "sa_id", "private_key", "folder_id")
     for acc in accounts:
+        required = _required_yc if acc.get("type") == "yc" else _required_vk
         missing = [k for k in required if not (acc.get(k) or "").strip()]
         if missing:
             name = acc.get("name", acc.get("id", "?"))
@@ -568,6 +895,19 @@ async def api_start(request: Request) -> JSONResponse:
         delay_min, delay_max = delay_max, delay_min
     if long_pause_min > long_pause_max:
         long_pause_min, long_pause_max = long_pause_max, long_pause_min
+
+    # Parse custom whitelist if provided, else use global
+    session_whitelist: list[ipaddress.IPv4Network] | None = None
+    custom_whitelist_raw = body.get("custom_whitelist")
+    if custom_whitelist_raw:
+        parsed_wl = []
+        for cidr in custom_whitelist_raw:
+            try:
+                parsed_wl.append(ipaddress.ip_network(str(cidr).strip(), strict=False))
+            except ValueError:
+                pass
+        if parsed_wl:
+            session_whitelist = parsed_wl
 
     session_id = str(uuid.uuid4())
     session = Session(id=session_id)
@@ -593,22 +933,28 @@ async def api_start(request: Request) -> JSONResponse:
                 q.put_nowait(None)
 
     async def _acc_worker(acc: dict, start_delay: float = 0.0) -> None:
+        common = dict(
+            delay_min=delay_min,
+            delay_max=delay_max,
+            proxy_url=acc.get("proxy_url") or None,
+            account_id=acc["id"],
+            long_pause_chance=long_pause_chance,
+            long_pause_min=long_pause_min,
+            long_pause_max=long_pause_max,
+            rest_every=rest_every,
+            rest_min=rest_min,
+            rest_max=rest_max,
+            start_delay=start_delay,
+            whitelist=session_whitelist,
+        )
         try:
-            async for event in run_rolling_loop(
-                creds=acc,
-                old_ip_id=acc.get("old_ip_id") or None,
-                delay_min=delay_min,
-                delay_max=delay_max,
-                proxy_url=acc.get("proxy_url") or None,
-                account_id=acc["id"],
-                long_pause_chance=long_pause_chance,
-                long_pause_min=long_pause_min,
-                long_pause_max=long_pause_max,
-                rest_every=rest_every,
-                rest_min=rest_min,
-                rest_max=rest_max,
-                start_delay=start_delay,
-            ):
+            if acc.get("type") == "yc":
+                gen = run_yc_rolling_loop(creds=acc, **common)
+            else:
+                gen = run_rolling_loop(
+                    creds=acc, old_ip_id=acc.get("old_ip_id") or None, **common
+                )
+            async for event in gen:
                 _push(event)
         except asyncio.CancelledError:
             pass
@@ -693,6 +1039,47 @@ async def api_stop_all(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "stopped": count})
 
 
+async def api_whitelist_info(request: Request) -> JSONResponse:
+    """Return default whitelist network count."""
+    return JSONResponse({"count": len(WHITELIST), "file": WHITELIST_FILE.name})
+
+
+async def api_yc_ips(request: Request) -> JSONResponse:
+    """Return list of Yandex Cloud static external IP addresses for one account."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Неверный JSON"}, status_code=400)
+
+    key_id = (body.get("key_id") or "").strip()
+    sa_id = (body.get("sa_id") or "").strip()
+    private_key = (body.get("private_key") or "").strip()
+    folder_id = (body.get("folder_id") or "").strip()
+    proxy_url = body.get("proxy_url") or None
+
+    missing = [k for k, v in {"key_id": key_id, "sa_id": sa_id,
+                               "private_key": private_key, "folder_id": folder_id}.items() if not v]
+    if missing:
+        return JSONResponse({"error": f"Не заполнены поля: {missing}"}, status_code=400)
+
+    try:
+        async with _make_client(proxy_url) as client:
+            iam_token, _ = await get_yc_iam_token(client, key_id, sa_id, private_key)
+            addresses = await list_yc_addresses(client, iam_token, folder_id)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return JSONResponse({"ips": [
+        {
+            "id": a["id"],
+            "ip": a.get("externalIpv4Address", {}).get("address", ""),
+            "zone": a.get("externalIpv4Address", {}).get("zoneId", ""),
+            "status": "USED" if a.get("used") else "FREE",
+        }
+        for a in addresses
+    ]})
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -707,6 +1094,8 @@ routes = [
     Route("/api/stop", api_stop, methods=["POST"]),
     Route("/api/stop-all", api_stop_all, methods=["POST"]),
     Route("/api/sessions", api_sessions),
+    Route("/api/yc-ips", api_yc_ips, methods=["POST"]),
+    Route("/api/whitelist-info", api_whitelist_info),
 ]
 
 app = Starlette(routes=routes)

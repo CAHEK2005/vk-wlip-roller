@@ -19,7 +19,12 @@
       "Bash(cmd /c \"netstat -ano | findstr \\\\\":8000\\\\\" | findstr LISTENING\")",
       "Bash(pip install:*)",
       "Bash(curl -s http://localhost:8000/)",
-      "Bash(C:/Users/admin/Documents/GitHub/vk-wlip-roller/.gitattributes:*)"
+      "Bash(C:/Users/admin/Documents/GitHub/vk-wlip-roller/.gitattributes:*)",
+      "WebFetch(domain:yandex.cloud)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"from app import _make_yc_jwt, get_yc_iam_token, allocate_yc_address, run_yc_rolling_loop, api_yc_ips; print\\(''Imports OK''\\)\"2)",
+      "Bash(PORT=8001 python app.py)",
+      "Bash(curl:*)"
     ]
   }
 }
