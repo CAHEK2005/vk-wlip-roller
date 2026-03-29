@@ -279,6 +279,10 @@ async def run_rolling_loop(
     long_pause_chance: float = 0.0,
     long_pause_min: float = 300.0,
     long_pause_max: float = 1200.0,
+    rest_every: int = 0,
+    rest_min: float = 1800.0,
+    rest_max: float = 5400.0,
+    start_delay: float = 0.0,
 ):
     """
     Async generator that yields SSE events tagged with account_id.
@@ -287,6 +291,10 @@ async def run_rolling_loop(
     """
     def ev(event: str, data) -> dict:
         return _sse_tagged(account_id, event, data)
+
+    if start_delay > 0:
+        yield ev("status", f"Ожидание старта {start_delay:.0f}с (разнос аккаунтов)...")
+        await asyncio.sleep(start_delay)
 
     yield ev("status", f"Аутентификация ({creds['auth_url']})...")
 
@@ -326,6 +334,7 @@ async def run_rolling_loop(
         attempt = 0
         prev_fip: dict | None = None
         rate_limit_wait = RATE_LIMIT_BASE
+        ua_rotate_at = random.randint(10, 30)
 
         try:
             while True:
@@ -334,18 +343,37 @@ async def run_rolling_loop(
                     yield ev("status", "Обновление токена и смена UA...")
                     await client.aclose()
                     client = _make_client(proxy_url)
-                    try:
-                        scoped_token, neutron_url, expires_at = await get_scoped_token(
-                            client, creds["auth_url"], creds["project_id"],
-                            creds["region"], creds["api_token"],
-                        )
-                        refresh_at = expires_at - timedelta(seconds=random.uniform(120, 600))
-                        yield ev("status", "Токен обновлён.")
-                    except Exception as e:
-                        yield ev("error", f"Ошибка обновления токена: {e}")
+                    refresh_ok = False
+                    for _retry in range(3):
+                        try:
+                            scoped_token, neutron_url, expires_at = await get_scoped_token(
+                                client, creds["auth_url"], creds["project_id"],
+                                creds["region"], creds["api_token"],
+                            )
+                            refresh_at = expires_at - timedelta(seconds=random.uniform(120, 600))
+                            yield ev("status", "Токен обновлён.")
+                            refresh_ok = True
+                            break
+                        except Exception as e:
+                            if _retry < 2:
+                                wait = 30 * (_retry + 1)
+                                yield ev("status",
+                                         f"Ошибка обновления токена (попытка {_retry + 1}/3),"
+                                         f" повтор через {wait}с: {e}")
+                                await asyncio.sleep(wait)
+                            else:
+                                yield ev("error", f"Ошибка обновления токена: {e}")
+                    if not refresh_ok:
                         return
 
                 attempt += 1
+
+                # Periodic UA rotation (lightweight: no re-auth, just new client)
+                if attempt >= ua_rotate_at:
+                    yield ev("status", "Смена User-Agent...")
+                    await client.aclose()
+                    client = _make_client(proxy_url)
+                    ua_rotate_at = attempt + random.randint(10, 30)
 
                 # Delete previous non-matching IP before allocating new one
                 if prev_fip:
@@ -404,6 +432,12 @@ async def run_rolling_loop(
                         yield ev("status",
                                  f"Длинная пауза {lp/60:.1f} мин. (антиблок)...")
                         await asyncio.sleep(lp)
+                    # Mandatory periodic rest after every N attempts
+                    if rest_every > 0 and attempt % rest_every == 0:
+                        rest = random.uniform(rest_min, rest_max)
+                        yield ev("status",
+                                 f"Плановый отдых {rest/60:.0f} мин. (каждые {rest_every} попыток)...")
+                        await asyncio.sleep(rest)
 
         except asyncio.CancelledError:
             if prev_fip:
@@ -521,6 +555,9 @@ async def api_start(request: Request) -> JSONResponse:
     long_pause_chance = float(body.get("long_pause_chance", 0.0)) / 100.0
     long_pause_min = float(body.get("long_pause_min", 5)) * 60.0
     long_pause_max = float(body.get("long_pause_max", 20)) * 60.0
+    rest_every = int(body.get("rest_every", 0))
+    rest_min = float(body.get("rest_min", 30)) * 60.0
+    rest_max = float(body.get("rest_max", 90)) * 60.0
 
     if not accounts:
         return JSONResponse({"error": "Не передано ни одного аккаунта"}, status_code=400)
@@ -563,7 +600,7 @@ async def api_start(request: Request) -> JSONResponse:
             for q in list(session.queues):
                 q.put_nowait(None)
 
-    async def _acc_worker(acc: dict) -> None:
+    async def _acc_worker(acc: dict, start_delay: float = 0.0) -> None:
         try:
             async for event in run_rolling_loop(
                 creds=acc,
@@ -575,6 +612,10 @@ async def api_start(request: Request) -> JSONResponse:
                 long_pause_chance=long_pause_chance,
                 long_pause_min=long_pause_min,
                 long_pause_max=long_pause_max,
+                rest_every=rest_every,
+                rest_min=rest_min,
+                rest_max=rest_max,
+                start_delay=start_delay,
             ):
                 _push(event)
         except asyncio.CancelledError:
@@ -582,8 +623,9 @@ async def api_start(request: Request) -> JSONResponse:
         finally:
             _account_done()
 
-    for acc in accounts:
-        task = asyncio.create_task(_acc_worker(acc))
+    for i, acc in enumerate(accounts):
+        stagger = 0.0 if i == 0 else i * random.uniform(15, 45)
+        task = asyncio.create_task(_acc_worker(acc, start_delay=stagger))
         session.tasks.append(task)
 
     return JSONResponse({"session_id": session_id})

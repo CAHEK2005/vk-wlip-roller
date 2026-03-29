@@ -359,6 +359,19 @@
       <input type="number" id="longPauseMax" value="20" min="1" max="120" step="1">
       <label style="color:#8b949e;font-size:0.78rem;">минут &nbsp;(независимо для каждого аккаунта)</label>
     </div>
+    <div class="settings-row" style="margin-top:8px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="restEnabled" style="width:14px;height:14px;margin:0;accent-color:#238636;" checked>
+        Плановый отдых:
+      </label>
+      <label style="color:#8b949e;font-size:0.78rem;">каждые</label>
+      <input type="number" id="restEvery" value="50" min="10" max="500" step="10" style="width:60px;">
+      <label style="color:#8b949e;font-size:0.78rem;">попыток, на</label>
+      <input type="number" id="restMin" value="30" min="5" max="240" step="5" style="width:55px;">
+      <label style="color:#8b949e;font-size:0.78rem;">—</label>
+      <input type="number" id="restMax" value="90" min="5" max="480" step="5" style="width:55px;">
+      <label style="color:#8b949e;font-size:0.78rem;">минут</label>
+    </div>
     <div class="settings-row" style="margin-top:10px;">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
         <input type="checkbox" id="timerEnabled" style="width:14px;height:14px;margin:0;accent-color:#238636;">
@@ -667,6 +680,10 @@ function startAll() {
   const longPauseChance = parseFloat(document.getElementById('longPauseChance').value) || 0;
   const longPauseMin = parseFloat(document.getElementById('longPauseMin').value) || 5;
   const longPauseMax = parseFloat(document.getElementById('longPauseMax').value) || 20;
+  const restEnabled = document.getElementById('restEnabled').checked;
+  const restEvery = parseInt(document.getElementById('restEvery').value) || 50;
+  const restMin = parseFloat(document.getElementById('restMin').value) || 30;
+  const restMax = parseFloat(document.getElementById('restMax').value) || 90;
 
   const body = {
     mode: 'find',
@@ -675,6 +692,9 @@ function startAll() {
     long_pause_chance: longPauseChance,
     long_pause_min: longPauseMin,
     long_pause_max: longPauseMax,
+    rest_every: restEnabled ? restEvery : 0,
+    rest_min: restMin,
+    rest_max: restMax,
     accounts: selected.map(acc => buildAccountPayload(acc, 'find')),
   };
 
@@ -692,6 +712,10 @@ function startReplace(accId) {
   const longPauseChance = parseFloat(document.getElementById('longPauseChance').value) || 0;
   const longPauseMin = parseFloat(document.getElementById('longPauseMin').value) || 5;
   const longPauseMax = parseFloat(document.getElementById('longPauseMax').value) || 20;
+  const restEnabled = document.getElementById('restEnabled').checked;
+  const restEvery = parseInt(document.getElementById('restEvery').value) || 50;
+  const restMin = parseFloat(document.getElementById('restMin').value) || 30;
+  const restMax = parseFloat(document.getElementById('restMax').value) || 90;
 
   const body = {
     mode: 'replace',
@@ -700,6 +724,9 @@ function startReplace(accId) {
     long_pause_chance: longPauseChance,
     long_pause_min: longPauseMin,
     long_pause_max: longPauseMax,
+    rest_every: restEnabled ? restEvery : 0,
+    rest_min: restMin,
+    rest_max: restMax,
     accounts: [buildAccountPayload(acc, 'replace')],
   };
 
@@ -749,6 +776,10 @@ async function launchStream(body, involvedAccounts) {
     longPauseChance: document.getElementById('longPauseChance').value,
     longPauseMin:    document.getElementById('longPauseMin').value,
     longPauseMax:    document.getElementById('longPauseMax').value,
+    restEnabled:     document.getElementById('restEnabled').checked,
+    restEvery:       document.getElementById('restEvery').value,
+    restMin:         document.getElementById('restMin').value,
+    restMax:         document.getElementById('restMax').value,
     timerEnabled:    document.getElementById('timerEnabled').checked,
     timerMinutes:    document.getElementById('timerMinutes').value,
   }));
@@ -1024,6 +1055,10 @@ function doReconnect(sid, accountsInfo) {
       if (s.longPauseChance !== undefined) document.getElementById('longPauseChance').value = s.longPauseChance;
       if (s.longPauseMin !== undefined)    document.getElementById('longPauseMin').value = s.longPauseMin;
       if (s.longPauseMax !== undefined)    document.getElementById('longPauseMax').value = s.longPauseMax;
+      if (s.restEnabled !== undefined)     document.getElementById('restEnabled').checked = s.restEnabled;
+      if (s.restEvery !== undefined)       document.getElementById('restEvery').value = s.restEvery;
+      if (s.restMin !== undefined)         document.getElementById('restMin').value = s.restMin;
+      if (s.restMax !== undefined)         document.getElementById('restMax').value = s.restMax;
       if (s.timerEnabled !== undefined)    document.getElementById('timerEnabled').checked = s.timerEnabled;
       if (s.timerMinutes !== undefined)    document.getElementById('timerMinutes').value = s.timerMinutes;
     } catch(e) {}
